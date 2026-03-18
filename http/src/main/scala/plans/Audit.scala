@@ -22,7 +22,7 @@ import org.http4s._
 import org.http4s.dsl.io._
 
 final case class Audit(config: NelsonConfig) extends Default {
-  import Json._
+  import nelson.Json.{*, given}
 
   object Action extends OptionalQueryParamDecoderMatcher[String]("action")
 
@@ -35,7 +35,7 @@ final case class Audit(config: NelsonConfig) extends Default {
   object RId extends OptionalQueryParamDecoderMatcher[Long]("release_id")
 
 
-  val service: HttpService[IO] = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     /*
      * GET /v1/audit
      * Returns the most recent audit events.

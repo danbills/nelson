@@ -18,24 +18,23 @@ package nelson
 package plans
 
 import ManifestValidator.{ManifestValidation}
-import ManifestValidator.Json._
-import cleanup.ExpirationPolicy.Json._
-import argonaut._
-import Argonaut._
-import argonaut.DecodeResultCats._
+import ManifestValidator.Json.given
+import cleanup.ExpirationPolicy.Json.given
+
+import io.circe.{Encoder, Decoder, Json}
+import io.circe.syntax._
 
 import org.http4s.{BuildInfo => _, _}
+import org.http4s.circe._
 import org.http4s.dsl.io._
-import org.http4s.argonaut._
 
 import cats.data.Validated.{Invalid, Valid}
 import cats.effect.IO
 import cats.syntax.apply._
 
 final case class Misc(config: NelsonConfig) extends Default {
-  import Misc._
-  import nelson.Json._
-  import Json._
+  import Misc.{*, given}
+  import nelson.Json.{*, given}
 
   /*
    * {
@@ -45,26 +44,25 @@ final case class Misc(config: NelsonConfig) extends Default {
    *   }
    * }
    */
-  private implicit val RecentStatisticsEncoder: EncodeJson[Nelson.RecentStatistics] =
-    EncodeJson { case (s: Nelson.RecentStatistics) =>
-      (("stacks_by_status" :=
-        ("labels" := s.statusCounts.map(_._1)) ->:
-        ("data"   := s.statusCounts.map(_._2)) ->:
-        jEmptyObject
-      ) ->:
-      ("most_deployed" :=
-        ("labels" := s.mostDeployed.map(_._1)) ->:
-        ("data"   := s.mostDeployed.map(_._2)) ->:
-        jEmptyObject
-      ) ->:
-      ("least_deployed" :=
-        ("labels" := s.leastDeployed.map(_._1)) ->:
-        ("data"   := s.leastDeployed.map(_._2)) ->:
-        jEmptyObject
-      ) ->: jEmptyObject)
+  private given Encoder[Nelson.RecentStatistics] =
+    Encoder.instance { (s: Nelson.RecentStatistics) =>
+      Json.obj(
+        "stacks_by_status" -> Json.obj(
+          "labels" -> s.statusCounts.map(_._1).asJson,
+          "data"   -> s.statusCounts.map(_._2).asJson
+        ),
+        "most_deployed" -> Json.obj(
+          "labels" -> s.mostDeployed.map(_._1).asJson,
+          "data"   -> s.mostDeployed.map(_._2).asJson
+        ),
+        "least_deployed" -> Json.obj(
+          "labels" -> s.leastDeployed.map(_._1).asJson,
+          "data"   -> s.leastDeployed.map(_._2).asJson
+        )
+      )
     }
 
-  implicit val datacenterEncoder: EncodeJson[Datacenter] = EncodeJson { dc => dc.name.asJson }
+  given Encoder[Datacenter] = Encoder[String].contramap(_.name)
 
   def handleLintRequest(str: String, units: List[ManifestValidator.NelsonUnit]): IO[Response[IO]] =
     ManifestValidator.validate(str, units).run(config).attempt.flatMap {
@@ -78,7 +76,7 @@ final case class Misc(config: NelsonConfig) extends Default {
         Ok()
     }
 
-  val service: HttpService[IO] = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     /*
      * POST /v1/profile/sync
      * Purpose of this resource is primarily to support the UI such that
@@ -137,29 +135,27 @@ final case class Misc(config: NelsonConfig) extends Default {
      *
      * {{{
      * {
-     *   "details": "2017/02/06 20:31:57.832769 [INFO] consul-template v0.18.0 (5211c66)\n2017/02/06 20:31:57.832781 [INFO] (runner) creating new runner (dry: true, once: true)\n2017/02/06 20:31:57.832968 [INFO] (runner) creating watcher\n2017/02/06 20:31:57.837192 [INFO] (runner) starting\n2017/02/06 20:31:57.837213 [INFO] (runner) initiating run\nConsul Template returned errors:\n/consul-template/templates/nelson8021968182946245276.template: parse: template: :3: unterminated quoted string\n",
+     *   "details": "2017/02/06 20:31:57.832769 [INFO] consul-template v0.18.0 ...",
      *   "message": "template rendering failed"
      * }
      * }}}
      */
     case req @ POST -> Root / "v1" / "validate-template" & IsAuthenticated(_) => {
       import Templates._
-      decode[TemplateValidation](req) { tv =>
+      decode[Templates.TemplateValidation](req) { tv =>
         validateTemplate(tv).run(config).flatMap {
           case Rendered =>
             NoContent()
           case InvalidTemplate(errors) =>
-            BadRequest {
-              ("message" := "template rendering failed") ->:
-              ("details" := errors) ->:
-              jEmptyObject
-            }
+            BadRequest(Json.obj(
+              "message" -> Json.fromString("template rendering failed"),
+              "details" -> Json.fromString(errors)
+            ))
           case TemplateTimeout(errors) =>
-            GatewayTimeout {
-              ("message" := "template rendering timed out") ->:
-              ("details" := errors) ->:
-              jEmptyObject
-            }
+            GatewayTimeout(Json.obj(
+              "message" -> Json.fromString("template rendering timed out"),
+              "details" -> Json.fromString(errors)
+            ))
         }
       }
     }
@@ -168,26 +164,6 @@ final case class Misc(config: NelsonConfig) extends Default {
      * GET /v1/cleanup-policies
      *
      * This resource return a list of cleanup policies with a descrption
-     *
-     * The response json should look something like:
-     *
-     * {{{
-     * [
-     *   {
-     *    "policy": "retain-latest",
-     *    "descrption": "retains the latest version"
-     *   },
-     *   {
-     *    "policy": "retain-latest-two-major",
-     *    "descrption": "retains the latest two major versions, i.e. 2.X.X and 1.X.X"
-     *   },
-     *   {
-     *    "policy": "retain-latest-two-feature",
-     *    "descrption": "retains the latest two feature versions, i.e. 2.3.X and 2.2.X"
-     *   }
-     * ]
-     * }}}
-     *
      */
     case GET -> Root / "v1" / "cleanup-policies" & IsAuthenticated(_) =>
       Ok(cleanup.ExpirationPolicy.policies.toList.asJson)
@@ -203,30 +179,34 @@ final case class Misc(config: NelsonConfig) extends Default {
      */
     case GET -> Root / "v1" / "build-info" =>
       val buildInfo = BuildInfo.asJson
-      val json = ("banner" := Banner.text) ->: buildInfo
+      val json = buildInfo.deepMerge(Json.obj("banner" -> Banner.text.asJson))
       Ok(json)
   }
 }
 
 object Misc {
-  implicit val codecTemplateValidation: DecodeJson[Templates.TemplateValidation] =
-    DecodeJson { c =>
-      ((c --\ "unit").as[UnitRef],
-       (c --\ "resources").as[Set[String]],
-       (c --\ "template").as[Base64].map(_.decoded)).mapN(Templates.TemplateValidation.apply)
+  import nelson.Json.{*, given}
+
+  given Decoder[Templates.TemplateValidation] =
+    Decoder.instance { c =>
+      for {
+        unit      <- c.downField("unit").as[UnitRef]
+        resources <- c.downField("resources").as[Set[String]]
+        template  <- c.downField("template").as[Base64].map(_.decoded)
+      } yield Templates.TemplateValidation(unit, resources, template)
     }
 
-  implicit val encodeBuildInfo: EncodeJson[BuildInfo.type] =
-    EncodeJson((x: BuildInfo.type) =>
-      ("build_info" :=
-        ("name" := x.name) ->:
-        ("version" := x.version) ->:
-        ("scala_version" := x.scalaVersion) ->:
-        ("sbt_version" := x.sbtVersion) ->:
-        ("git_revision" := x.gitRevision) ->:
-        ("build_date" := x.buildDate) ->:
-        jEmptyObject
-      ) ->: jEmptyObject
-    )
-
+  given Encoder[BuildInfo.type] =
+    Encoder.instance { x =>
+      Json.obj(
+        "build_info" -> Json.obj(
+          "name"          -> x.name.asJson,
+          "version"       -> x.version.asJson,
+          "scala_version" -> x.scalaVersion.asJson,
+          "sbt_version"   -> x.sbtVersion.asJson,
+          "git_revision"  -> x.gitRevision.asJson,
+          "build_date"    -> x.buildDate.asJson
+        )
+      )
+    }
 }

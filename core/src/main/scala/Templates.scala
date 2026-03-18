@@ -17,11 +17,11 @@
 package nelson
 
 import cats.data.Kleisli
-import cats.effect.{Effect, IO}
+import cats.effect.IO
 import cats.syntax.flatMap._
 import nelson.CatsHelpers._
 
-import fs2.{Scheduler, Stream}
+import fs2.Stream
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeoutException
@@ -29,7 +29,6 @@ import java.util.concurrent.TimeoutException
 import journal._
 
 import scala.sys.process.{Process => _, _}
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
 import Datacenter.StackName
@@ -38,7 +37,6 @@ import Metrics.default.{lintTemplateContainerCleanupFailuresTotal, lintTemplateC
 import vault.policies
 
 object Templates {
-  import java.util.concurrent.ScheduledExecutorService
 
   private[this] val logger = Logger[this.type]
 
@@ -61,10 +59,6 @@ object Templates {
 
   /**
    * A template that we want to render in Nelson
-   *
-   * @param unitRef the name of the unit that owns the template
-   * @param resources a set of resources the unit depends on
-   * @param template the content of the template
    */
   final case class TemplateValidation(
     unitRef: UnitRef,
@@ -76,52 +70,40 @@ object Templates {
   def validateTemplate(tv: TemplateValidation): NelsonK[LintTemplateResult] =
     Kleisli { cfg =>
       val dc = cfg.datacenters.headOption.getOrElse {
-        // We should never see this. Nelson doesn't start without a datacenter.
         sys.error("Can't validate a template without a datacenter")
       }
 
       val vault = dc.interpreters.vault
-
       val dcName = dc.name
       val dnsRoot = dc.domain.name
-
       val ns = cfg.defaultNamespace
       val sn = StackName(tv.unitRef, Version(0, 0, 0), s"test${randomAlphaNumeric(8)}")
 
       val env = Map(
         "NELSON_DATACENTER" -> dcName,
-        "NELSON_DNS_ROOT" -> dnsRoot,
-        "NELSON_ENV" -> ns.root.asString,
-        "NELSON_PLAN" -> "default",
-        "NELSON_STACKNAME" -> sn.toString
+        "NELSON_DNS_ROOT"   -> dnsRoot,
+        "NELSON_ENV"        -> ns.root.asString,
+        "NELSON_PLAN"       -> "default",
+        "NELSON_STACKNAME"  -> sn.toString
       )
 
       val templateConfig = cfg.template
 
       policies.withPolicy(dc.policy, sn, ns, tv.resources, vault) { token =>
         Stream.bracket(IO {
-          // Mounting a single file in Docker is supported, but troublesome.
-          // Instead, we're going to create a temp directory for our temp file.
-          //
-          // Also troublesome is that we can only mount from our home directory
-          // on docker-machine, so we can't just use java.io.tmpdir.
           Files.createDirectories(templateConfig.tempDir)
           val dir = Files.createTempDirectory(templateConfig.tempDir, "nelson")
           dir.toFile.deleteOnExit()
           dir
-        })(
-          dir => withTempFile(tv.template, "nelson", ".template", dir) { file =>
-            Stream.eval(renderTemplate(cfg.pools.defaultExecutor, cfg.pools.schedulingPool, templateConfig, cfg.dockercfg, file.toPath, token.value, env))
-          },
-          dir => IO { dir.toFile.delete(); () }
-        )
+        })(dir => IO { dir.toFile.delete(); () }).flatMap { dir =>
+          withTempFile(tv.template, "nelson", ".template", dir) { file =>
+            Stream.eval(renderTemplate(templateConfig, cfg.dockercfg, file.toPath, token.value, env))
+          }
+        }
       }.compile.last.map(_.getOrElse(sys.error("Expected a LintTemplateResult")))
     }
 
-  @SuppressWarnings(Array("org.brianmckenna.wartremover.warts.IsInstanceOf")) // false wart
   def renderTemplate(
-    ec: ExecutionContext,
-    scheduler: ScheduledExecutorService,
     templateConfig: TemplateConfig,
     dockerConfig: DockerConfig,
     path: Path,
@@ -157,9 +139,7 @@ object Templates {
         lintTemplateContainersRunning.inc()
         val exitCode = cmd.!(pLogger)
         exitCode
-      }.timed(templateConfig.timeout)(ec).attempt.flatMap {
-        // ^ NOTE: This will return when the timeout is up but will not cancel
-        // the already running action - that is pending https://github.com/typelevel/cats-effect/pull/121
+      }.timed(templateConfig.timeout).attempt.flatMap {
         case Right(0) =>
           lintTemplateContainersRunning.dec()
           IO.pure(Rendered)
@@ -173,11 +153,9 @@ object Templates {
           lintTemplateContainersRunning.dec()
           IO.raiseError(LintTemplateError(n, err.toString))
         case Left(_: TimeoutException) =>
-          // We gave up.  We need to terminate the container and show the user as far as we got.
-          cleanup(scheduler, dockerConfig, containerName).attempt flatMap { _ => IO.pure(TemplateTimeout(err.toString)) }
+          cleanup(dockerConfig, containerName).attempt flatMap { _ => IO.pure(TemplateTimeout(err.toString)) }
         case Left(e) =>
-          // Something went wrong internally.  We need to clean up the template container.
-          cleanup(scheduler, dockerConfig, containerName).attempt flatMap { _ => IO.raiseError(e) }
+          cleanup(dockerConfig, containerName).attempt flatMap { _ => IO.raiseError(e) }
       }
     }.flatten)
 
@@ -187,7 +165,7 @@ object Templates {
     }
   }
 
-  private def cleanup(scheduler: ScheduledExecutorService, dockerConfig: DockerConfig, containerName: String) = {
+  private def cleanup(dockerConfig: DockerConfig, containerName: String): IO[Unit] = {
     val stop = {
       val pLogger = ProcessLogger(_ => (), s => logger.info(s"[stopping docker $containerName]: ${s}"))
       IO {
@@ -196,11 +174,10 @@ object Templates {
       }.attempt
     }
 
-    (Scheduler.fromScheduledExecutorService(scheduler).awakeEvery[IO](1.second)(Effect[IO], ExecutionContext.fromExecutorService(scheduler))
-      >> Stream.eval(stop))
+    (Stream.fixedDelay[IO](1.second) >> Stream.eval(stop))
       .take(5)
-      .collect { case Right(0) => () } // look for a success
-      .take(1) // Only need to succeed once
+      .collect { case Right(0) => () }
+      .take(1)
       .compile
       .last
       .map {
@@ -212,7 +189,6 @@ object Templates {
       }
   }
 
-  @SuppressWarnings(Array("org.brianmckenna.wartremover.warts.IsInstanceOf")) // false wart
   private def timedRun(task: IO[LintTemplateResult]): IO[LintTemplateResult] =
     IO(System.nanoTime).flatMap { startNanos =>
       task.attempt.flatMap { att =>

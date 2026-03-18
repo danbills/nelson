@@ -20,18 +20,15 @@ package docker
 import cats.~>
 import cats.effect.IO
 
-import java.util.concurrent.ScheduledExecutorService
-
 import journal.Logger
 
 import scala.collection.mutable.MutableList
-import scala.concurrent.ExecutionContext
 
 /**
  * The fugiest docker client around.
  * Extreamly crude. Barely works.
  */
-class Docker(cfg: DockerConfig, scheduler: ScheduledExecutorService, ec: ExecutionContext) extends (DockerOp ~> IO) {
+class Docker(cfg: DockerConfig) extends (DockerOp ~> IO) {
   import Docker._
   import sys.process._
 
@@ -39,9 +36,9 @@ class Docker(cfg: DockerConfig, scheduler: ScheduledExecutorService, ec: Executi
 
   def apply[A](op: DockerOp[A]): IO[A] =
     op match {
-      case DockerOp.Tag(i, r)     => tag(i, i.to(r)).retryExponentially()(scheduler, ec)
-      case DockerOp.Push(i)       => push(i).retryExponentially()(scheduler, ec)
-      case DockerOp.Pull(i)       => pull(i).retryExponentially()(scheduler, ec)
+      case DockerOp.Tag(i, r)     => tag(i, i.to(r)).retryExponentially()
+      case DockerOp.Push(i)       => push(i).retryExponentially()
+      case DockerOp.Pull(i)       => pull(i).retryExponentially()
       case DockerOp.Extract(unit) => extract(unit)
     }
 

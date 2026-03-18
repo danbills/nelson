@@ -17,13 +17,14 @@
 package nelson
 
 import nelson.plans.Auth
-import argonaut._, Argonaut._
+import io.circe.{Json => CJson}
+import io.circe.syntax._
 import cats.effect.IO
 import org.http4s._, headers._, dsl.io._, Uri.uri
-import org.http4s.argonaut._
-import Json._
+import org.http4s.circe._
 
 class AuthSpec extends NelsonSuite {
+  import nelson.Json.{*, given}
 
   val service = Server.json500(Auth(config).service)
 
@@ -60,29 +61,29 @@ class AuthSpec extends NelsonSuite {
 
   "/auth/github" should "return a Nelson token from a GitHub token" in {
     val accessToken = AccessToken("1234")
-    val req = Request[IO](POST, uri("/auth/github")).withBody(accessToken.asJson)
-    val resp = req.flatMap(service.orNotFound.run).unsafeRunSync()
+    val req = Request[IO](POST, uri("/auth/github")).withEntity(accessToken.asJson)
+    val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should be (Ok)
-    resp.as[Json].unsafeRunSync().field("session_token").isDefined should be (true)
+    resp.as[CJson].unsafeRunSync().hcursor.downField("session_token").as[String].isRight should be (true)
   }
 
   "/auth/github" should "return a 400 for malformed JSON" in {
     val req = Request[IO](POST, uri("/auth/github"))
-      .withBody("{")
-      .map(_.replaceAllHeaders(`Content-Type`(MediaType.`application/json`)))
-    val resp = req.flatMap(service.orNotFound.run).unsafeRunSync()
+      .withEntity("{")
+      .withHeaders(`Content-Type`(MediaType.application.json))
+    val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (BadRequest)
-    resp.as[Json].unsafeRunSync().fieldOrNull("message") should equal (
-      "Could not parse JSON".asJson)
+    resp.as[CJson].unsafeRunSync().hcursor.downField("message").as[String].toOption should equal (
+      Some("Could not parse JSON"))
   }
 
   "/auth/github" should "return a 422 for invalid (but well-formed) JSON" in {
-    val req = Request[IO](POST, uri("/auth/github")).withBody(().asJson)
-    val resp = req.flatMap(service.orNotFound.run).unsafeRunSync()
+    val req = Request[IO](POST, uri("/auth/github")).withEntity(CJson.obj())
+    val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (UnprocessableEntity)
-    val json = resp.as[Json].unsafeRunSync()
-    json.fieldOrNull("message") should equal ("Validation failed".asJson)
-    json.fieldOrNull("cursor_history").stringOrEmpty should include ("access_token")    
+    val json = resp.as[CJson].unsafeRunSync()
+    json.hcursor.downField("message").as[String].toOption should equal (Some("Validation failed"))
+    json.hcursor.downField("cursor_history").as[String].getOrElse("") should include ("access_token")
   }
 
   "/auth/github" should "return a 415 for bad media types" in {
@@ -93,10 +94,10 @@ class AuthSpec extends NelsonSuite {
 
   "/auth/github" should "return a 500 for a server error" in {
     val accessToken = AccessToken("crash")
-    val req = Request[IO](POST, uri("/auth/github")).withBody(accessToken.asJson)
-    val resp = req.flatMap(service.orNotFound.run).unsafeRunSync()
+    val req = Request[IO](POST, uri("/auth/github")).withEntity(accessToken.asJson)
+    val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (InternalServerError)
-    resp.as[Json].unsafeRunSync().fieldOrNull("message") should equal ("An internal error occurred".asJson)
+    resp.as[CJson].unsafeRunSync().hcursor.downField("message").as[String].toOption should equal (Some("An internal error occurred"))
   }
 
   "/auth/exchange" should "create a session from oauth code" in {

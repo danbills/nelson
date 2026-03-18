@@ -17,55 +17,63 @@
 package nelson
 package plans
 
-import _root_.argonaut._, Argonaut._
+import io.circe.{Encoder, Decoder, Json, DecodingFailure}
+import io.circe.syntax._
 
 import cats.effect.IO
 import cats.implicits._
 
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
 
 final case class Loadbalancers(config: NelsonConfig) extends Default {
   import Datacenter.{Namespace, LoadbalancerDeployment}
-  import Loadbalancers._
+  import Loadbalancers.{*, given}
   import Params._
 
-  private implicit val RouteEncoder: EncodeJson[Manifest.Route] =
-    EncodeJson((r: Manifest.Route) =>
-      ("lb_port" := r.port.port) ->:
-      ("backend_name" := r.destination.name) ->:
-      ("backend_port_reference":= r.destination.portReference) ->:
-      jEmptyObject
-    )
-
-  private implicit val LoadbalancerEncoder: EncodeJson[LoadbalancerDeployment] =
-    EncodeJson((lb: LoadbalancerDeployment) =>
-      ("name" := lb.stackName.toString) ->:
-      ("guid" := lb.guid) ->:
-      ("deploy_time" := lb.deployTime.toEpochMilli.asJson) ->:
-      ("routes" := lb.loadbalancer.routes) ->:
-      ("address" := lb.address) ->:
-      ("major_version" := lb.loadbalancer.version.major) ->:
-      jEmptyObject
-    )
-
-  private implicit val DatacenterNamespaceLoadbalancerEncoder: EncodeJson[(DatacenterRef, Namespace, LoadbalancerDeployment)] =
-    EncodeJson { case ((d: DatacenterRef, n: Namespace, lb: LoadbalancerDeployment)) =>
-      (("datacenter" := d) ->: ("namespace" := n.name.asString) ->: jEmptyObject).deepmerge(lb.asJson)
+  private given Encoder[Manifest.Route] =
+    Encoder.instance { (r: Manifest.Route) =>
+      Json.obj(
+        "lb_port"              -> r.port.port.asJson,
+        "backend_name"         -> r.destination.name.asJson,
+        "backend_port_reference" -> r.destination.portReference.asJson
+      )
     }
 
-  import nelson.Json._
-  private implicit val LoadbalancerSummaryEncoder: EncodeJson[Nelson.LoadbalancerSummary] =
-    EncodeJson((ls: Nelson.LoadbalancerSummary) =>
-      (("namespace"    := ls.namespace.name.asString) ->:
-       ("datacenter"    := ls.namespace.datacenter) ->:
-        ("dependencies" :=
-          ("outbound"  := ls.outboundDependencies) ->:
-          jEmptyObject
-      ) ->: jEmptyObject).deepmerge(ls.loadbalancer.asJson)
-    )
+  private given Encoder[LoadbalancerDeployment] =
+    Encoder.instance { (lb: LoadbalancerDeployment) =>
+      Json.obj(
+        "name"          -> lb.stackName.toString.asJson,
+        "guid"          -> lb.guid.asJson,
+        "deploy_time"   -> lb.deployTime.toEpochMilli.asJson,
+        "routes"        -> lb.loadbalancer.routes.asJson,
+        "address"       -> lb.address.asJson,
+        "major_version" -> lb.loadbalancer.version.major.asJson
+      )
+    }
 
-  val service: HttpService[IO] = HttpService[IO] {
+  private given Encoder[(DatacenterRef, Namespace, LoadbalancerDeployment)] =
+    Encoder.instance { case (d, n, lb) =>
+      Json.obj(
+        "datacenter" -> d.asJson,
+        "namespace"  -> n.name.asString.asJson
+      ).deepMerge(lb.asJson)
+    }
+
+  import nelson.Json.{*, given}
+  private given Encoder[Nelson.LoadbalancerSummary] =
+    Encoder.instance { (ls: Nelson.LoadbalancerSummary) =>
+      Json.obj(
+        "namespace"  -> ls.namespace.name.asString.asJson,
+        "datacenter" -> ls.namespace.datacenter.asJson,
+        "dependencies" -> Json.obj(
+          "outbound" -> ls.outboundDependencies.asJson
+        )
+      ).deepMerge(ls.loadbalancer.asJson)
+    }
+
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     /*
      * POST /v1/loadbalancers
@@ -120,17 +128,18 @@ final case class Loadbalancers(config: NelsonConfig) extends Default {
 }
 
 object Loadbalancers {
-  import _root_.argonaut._, Argonaut._
 
   final case class LoadbalancerLaunch(name: String, version: Int, datacenter: String, namespace: NamespaceName)
 
-  implicit val LoadbalancerLaunchCodecJson: DecodeJson[LoadbalancerLaunch] =
-    DecodeJson(c => for {
-      a <- (c --\ "name").as[String]
-      b <- (c --\ "major_version").as[Int]
-      d <- (c --\ "datacenter").as[String]
-      n <- (c --\ "namespace").as[String]
-      nn <- NamespaceName.fromString(n).toOption.map(DecodeResult.ok)
-              .getOrElse(DecodeResult.fail(s"unable to parse $n into a namespace", c.history))
-    } yield LoadbalancerLaunch(a,b,d,nn))
+  given Decoder[LoadbalancerLaunch] =
+    Decoder.instance { c =>
+      for {
+        a  <- c.downField("name").as[String]
+        b  <- c.downField("major_version").as[Int]
+        d  <- c.downField("datacenter").as[String]
+        n  <- c.downField("namespace").as[String]
+        nn <- NamespaceName.fromString(n)
+                .left.map(e => DecodingFailure(s"unable to parse $n into a namespace: ${e.getMessage}", c.history))
+      } yield LoadbalancerLaunch(a, b, d, nn)
+    }
 }

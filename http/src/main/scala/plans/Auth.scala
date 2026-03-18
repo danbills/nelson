@@ -17,25 +17,28 @@
 package nelson
 package plans
 
+import io.circe.{Encoder, Json}
+import io.circe.syntax._
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.headers.{Location, `Set-Cookie`}
-import org.http4s.argonaut._
-import _root_.argonaut._, Argonaut._
 import cats.effect.IO
+import cats.effect.unsafe.implicits.global
 
 final case class Auth(config: NelsonConfig) extends Default {
-  import nelson.Json._
+  import nelson.Json.{*, given}
   private val cfg = config
 
-  private implicit val SessionEncTuple2Encoder: EncodeJson[(java.time.Instant, String)] =
-    EncodeJson { case (exp,enc) =>
-      ("expires_at" := exp) ->:
-      ("session_token" := enc) ->:
-      jEmptyObject
+  private given Encoder[(java.time.Instant, String)] =
+    Encoder.instance { case (exp, enc) =>
+      Json.obj(
+        "expires_at"    -> exp.asJson,
+        "session_token" -> enc.asJson
+      )
     }
 
-  val service: HttpService[IO] = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case GET -> Root / "auth" / "login" =>
       if(cfg.security.useEnvironmentSession){
         Found(Location(uri("/auth/exchange?code=yolo")))
@@ -84,6 +87,6 @@ final case class Auth(config: NelsonConfig) extends Default {
       )
 
     case GET -> "v1" /: _ & NotAuthenticated() =>
-      Response(status = Unauthorized).withBody("Supplied authentication token is invalid.")
+      IO.pure(Response[IO](Status.Unauthorized).withEntity("Supplied authentication token is invalid."))
   }
 }

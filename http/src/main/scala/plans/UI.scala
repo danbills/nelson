@@ -19,20 +19,20 @@ package plans
 
 import cats.effect.IO
 import fs2.io
+import fs2.io.file.{Files, Path => FPath}
 import java.net.URLConnection
 import java.nio.file.Paths
 import org.http4s._
 import org.http4s.headers.{`Content-Type`, Location}
 import org.http4s.dsl.io._
-import org.http4s.argonaut._
-import _root_.argonaut._, Argonaut._
+import io.circe.syntax._
 import scala.xml.NodeSeq
 
 final case class UI(config: NelsonConfig) extends Default {
-  import nelson.Json._
+  import nelson.Json.{*, given}
   import UI._
 
-  val service = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case GET -> Root & IsAuthenticated(_) =>
       IO.pure(serveStaticFile(path = "index.html"))
 
@@ -50,7 +50,7 @@ final case class UI(config: NelsonConfig) extends Default {
 
     // adding this so that when not logged in, we dont return an error
     case GET -> Root / "session" & NotAuthenticated() =>
-      Ok(jEmptyObject)
+      Ok(io.circe.Json.obj())
 
     ////////////////////// PROFILES //////////////////////
 
@@ -115,15 +115,15 @@ final case class UI(config: NelsonConfig) extends Default {
     val resp = Response(body = io.readInputStream(IO(getClass.getClassLoader.getResourceAsStream(s"$prefix/$path")), 4096))
 
     Option(URLConnection.guessContentTypeFromName(path)).fold(resp) { ct =>
-      resp.putHeaders(Header("Content-Type", ct))
+      resp.putHeaders(Header.Raw(org.typelevel.ci.CIString("Content-Type"), ct))
     }
   }
 
   private def fileFromFilesystem(path: String): Response[IO] = {
-    val p = Paths.get(path)
-    val resp = Response(body = io.file.readAll[IO](p, 4096))
+    val p = FPath.fromNioPath(Paths.get(path))
+    val resp = Response(body = Files[IO].readAll(p))
     Option(URLConnection.guessContentTypeFromName(path)).fold(resp) { ct =>
-      resp.putHeaders(Header("Content-Type", ct))
+      resp.putHeaders(Header.Raw(org.typelevel.ci.CIString("Content-Type"), ct))
     }
   }
 }

@@ -20,23 +20,22 @@ package plans
 import org.http4s._
 import org.http4s.headers.`Content-Type`
 import org.http4s.dsl.io._
-import _root_.argonaut._, Argonaut._
 import cats.effect.IO
 import cats.data.OptionT
 import cats.free.Free
 import cats.implicits._
 
 final case class Graph(config: NelsonConfig) extends Default {
-  import nelson.Json._
+  import nelson.Json.{*, given}
   import routing.RoutingGraph
 
   def getRoutingGraph(ns: Datacenter.Namespace): storage.StoreOpF[Option[RoutingGraph]] =
      routing.RoutingTable.routingGraph(ns).map(x => Option(x))
 
-  val service: HttpService[IO] = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case GET -> Root / "v1" / "datacenters" / datacenter / namespace / "graph" =>
       (for {
-        name <- OptionT(NamespaceName.fromString(namespace).toOption.pure[Free[storage.StoreOp, ?]])
+        name <- OptionT(NamespaceName.fromString(namespace).toOption.pure[Free[storage.StoreOp, *]])
         ns  <- OptionT(storage.StoreOp.getNamespace(datacenter, name))
         gr  <- OptionT(getRoutingGraph(ns))
          graph = DependencyGraph(gr)

@@ -19,16 +19,17 @@ package plans
 
 import nelson.blueprint.Blueprint
 
-import _root_.argonaut._, Argonaut._
+import io.circe.{Encoder, Decoder, Json}
+import io.circe.syntax._
 import cats.effect.IO
 import cats.implicits._
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
-import _root_.argonaut.DecodeResultCats._
 import org.apache.commons.codec.digest.DigestUtils
 
 object Blueprints {
-  import nelson.Json._
+  import nelson.Json.{*, given}
 
   final case class BlueprintRequestJson(
     name: String,
@@ -37,41 +38,45 @@ object Blueprints {
     template: String
   )
 
-  implicit val BlueprintRequestDecoder: DecodeJson[BlueprintRequestJson] =
-    DecodeJson { c =>
-      ((c --\ "name").as[String],
-       (c --\ "description").as[Option[String]],
-       (c --\ "sha256").as[Sha256],
-       (c --\ "template").as[Base64].map(_.decoded)
-      ).mapN((w,x,y,z) => BlueprintRequestJson(w,x,y,z))
+  given Decoder[BlueprintRequestJson] =
+    Decoder.instance { c =>
+      for {
+        name        <- c.downField("name").as[String]
+        description <- c.downField("description").as[Option[String]]
+        sha256      <- c.downField("sha256").as[Sha256]
+        template    <- c.downField("template").as[Base64].map(_.decoded)
+      } yield BlueprintRequestJson(name, description, sha256, template)
     }
 
-  implicit val BlueprintRevisionEncoder: EncodeJson[Blueprint.Revision] =
-    EncodeJson((b: Blueprint.Revision) =>
-      b match {
-        case Blueprint.Revision.HEAD => jString("HEAD")
-        case Blueprint.Revision.Discrete(x) => jString(x.toString)
-      }
-    )
+  given Encoder[Blueprint.Revision] =
+    Encoder.instance {
+      case Blueprint.Revision.HEAD       => Json.fromString("HEAD")
+      case Blueprint.Revision.Discrete(x) => Json.fromString(x.toString)
+    }
 
-  implicit val BlueprintEncoder: EncodeJson[Blueprint] =
-      EncodeJson((b: Blueprint) =>
-        ("name" := b.name) ->:
-        ("description" :=? b.description) ->?:
-        ("revision" := b.revision) ->:
-        ("state" := b.state.toString.toLowerCase) ->:
-        ("sha256" := b.sha256) ->:
-        ("template" := b.template.toString) ->:
-        ("created_at" := b.createdAt) ->:
-        jEmptyObject
-      )
+  given Encoder[Blueprint] =
+    Encoder.instance { (b: Blueprint) =>
+      val fields = List(
+        Some("name"       -> b.name.asJson),
+        b.description.map(d => "description" -> d.asJson),
+        Some("revision"   -> b.revision.asJson),
+        Some("state"      -> b.state.toString.toLowerCase.asJson),
+        Some("sha256"     -> b.sha256.asJson),
+        Some("template"   -> b.template.toString.asJson),
+        Some("created_at" -> b.createdAt.asJson)
+      ).flatten
+      Json.obj(fields*)
+    }
 
-  implicit val BlueprintProofEncoder: CodecJson[BlueprintProof] = CodecJson(
-    (r: BlueprintProof) => ("content" := Base64(r.content).asJson) ->: jEmptyObject,
-    c => for {
-      content <- (c --\ "content").as[Base64].map(_.decoded)
-    } yield BlueprintProof(content)
-  )
+  given Encoder[BlueprintProof] =
+    Encoder.instance { r =>
+      Json.obj("content" -> Base64(r.content).asJson)
+    }
+
+  given Decoder[BlueprintProof] =
+    Decoder.instance { c =>
+      c.downField("content").as[Base64].map(b => BlueprintProof(b.decoded))
+    }
 }
 
 final case class BlueprintProof(
@@ -79,7 +84,7 @@ final case class BlueprintProof(
 )
 
 final case class Blueprints(config: NelsonConfig) extends Default {
-  import Blueprints._
+  import Blueprints.{*, given}
 
   /* ensure that the the user-supplied template survived encode/decode */
   def hasIntegrity(suppliedSha256: Sha256, template: String): Boolean = {
@@ -87,7 +92,7 @@ final case class Blueprints(config: NelsonConfig) extends Default {
     computed == suppliedSha256
   }
 
-  val service: HttpService[IO] = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     /*
      * GET /v1/blueprints
      *

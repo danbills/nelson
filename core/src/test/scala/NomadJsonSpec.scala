@@ -16,11 +16,12 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
+import io.circe.{Json => CJson}
+import io.circe.syntax._
+
 import org.scalatest._
 
 class NomadJsonSpec extends FlatSpec with Matchers with Inspectors {
-  import Json._
-  import argonaut._, Argonaut._
   import Manifest.{Ports,Port}
   import scala.concurrent.duration._
   import nelson.scheduler.NomadJson
@@ -45,224 +46,225 @@ class NomadJsonSpec extends FlatSpec with Matchers with Inspectors {
   it should "generate docker config json with ports" in {
     val json = NomadJson.dockerConfigJson(nomad, image, Some(ports), NomadJson.BridgeMode)
 
-    json should equal (Json(
-      "port_map" := List(Json("http" := 8080)),
-      "image" := "https://image",
-      "network_mode" := "bridge",
-      "auth" := List(Json(
-        "username" := "user",
-        "password" := "pass",
-        "server_address":= "addy",
-        "SSL" := true
-      ))
+    json should equal (CJson.obj(
+      "port_map"     -> List(CJson.obj("http" -> 8080.asJson)).asJson,
+      "image"        -> "https://image".asJson,
+      "network_mode" -> "bridge".asJson,
+      "auth"         -> List(CJson.obj(
+        "username"       -> "user".asJson,
+        "password"       -> "pass".asJson,
+        "server_address" -> "addy".asJson,
+        "SSL"            -> true.asJson
+      )).asJson
     ))
   }
 
   it should "generate docker config json without ports" in {
     val json = NomadJson.dockerConfigJson(nomad, image, None, NomadJson.BridgeMode)
-    json should equal (Json(
-      "image" := "https://image",
-      "network_mode" := "bridge",
-      "auth" := List(Json(
-        "username" := "user",
-        "password" := "pass",
-        "server_address":= "addy",
-        "SSL" := true
-      ))
+    json should equal (CJson.obj(
+      "image"        -> "https://image".asJson,
+      "network_mode" -> "bridge".asJson,
+      "auth"         -> List(CJson.obj(
+        "username"       -> "user".asJson,
+        "password"       -> "pass".asJson,
+        "server_address" -> "addy".asJson,
+        "SSL"            -> true.asJson
+      )).asJson
     ))
   }
 
   it should "generate resources json with ports" in {
     val json = NomadJson.resourcesJson(4000000, 512, Some(ports))
-    json should equal (Json(
-      "CPU" := 4000000,
-      "MemoryMB" := 512,
-      "IOPS" := 0,
-      "Networks" := List(Json(
-        "mbits" := 1,
-        "DynamicPorts" := List(Json(
-            "Label" := "http",
-            "Value" := 0
-        ))
-      ))
+    json should equal (CJson.obj(
+      "CPU"      -> 4000000.asJson,
+      "MemoryMB" -> 512.asJson,
+      "IOPS"     -> 0.asJson,
+      "Networks" -> List(CJson.obj(
+        "mbits" -> 1.asJson,
+        "DynamicPorts" -> List(CJson.obj(
+            "Label" -> "http".asJson,
+            "Value" -> 0.asJson
+        )).asJson
+      )).asJson
     ))
   }
+
   it should "generate resources json without ports" in {
     val json = NomadJson.resourcesJson(4000000, 512, None)
-    json should equal (Json(
-      "CPU" := 4000000,
-      "MemoryMB" := 512,
-      "IOPS" := 0,
-      "Networks" := List(Json("mbits" := 1))
+    json should equal (CJson.obj(
+      "CPU"      -> 4000000.asJson,
+      "MemoryMB" -> 512.asJson,
+      "IOPS"     -> 0.asJson,
+      "Networks" -> List(CJson.obj("mbits" -> 1.asJson)).asJson
     ))
   }
 
   it should "generate environment json" in {
     val json = NomadJson.envJson(env.bindings)
-    json should equal (Json(
-      "NELSON_STACKNAME":="stackname",
-      "NELSON_DATACENTER":="dc1"
+    json should equal (CJson.obj(
+      "NELSON_STACKNAME"  -> "stackname".asJson,
+      "NELSON_DATACENTER" -> "dc1".asJson
     ))
   }
 
   it should "generate services json" in {
     val json = NomadJson.servicesJson("name", ports.default, Set("tag1", "tag2"), Nil)
-    json should equal (Json(
-      "Name" := "name",
-      "PortLabel" := "http",
-      "Tags" := List("tag1","tag2"),
-      "Checks" := List(Json(
-        "Name" := "tcp http name",
-        "Type" := "tcp",
-        "PortLabel" := "http",
-        "Args" := jNull,
-        "Command" := "",
-        "Id" := "",
-        "Path" := "",
-        "Protocol" := jNull,
-        "Interval":= 10000000000L,
-        "Timeout":= 4000000000L,
-        "TLSSkipVerify" := false
-      ))
+    json should equal (CJson.obj(
+      "Name"      -> "name".asJson,
+      "PortLabel" -> "http".asJson,
+      "Tags"      -> List("tag1","tag2").asJson,
+      "Checks"    -> List(CJson.obj(
+        "Name"         -> "tcp http name".asJson,
+        "Type"         -> "tcp".asJson,
+        "PortLabel"    -> "http".asJson,
+        "Args"         -> CJson.Null,
+        "Command"      -> "".asJson,
+        "Id"           -> "".asJson,
+        "Path"         -> "".asJson,
+        "Protocol"     -> CJson.Null,
+        "Interval"     -> 10000000000L.asJson,
+        "Timeout"      -> 4000000000L.asJson,
+        "TLSSkipVerify" -> false.asJson
+      )).asJson
     ))
   }
 
   it should "generate log json" in {
     val json = NomadJson.logJson(10,10)
-    json should equal (Json(
-      "MaxFiles"      := 10,
-      "MaxFileSizeMB" := 10
+    json should equal (CJson.obj(
+      "MaxFiles"      -> 10.asJson,
+      "MaxFileSizeMB" -> 10.asJson
     ))
   }
 
   it should "genrate periodic json" in {
     val json = NomadJson.periodicJson("* * * 24")
-    json should equal (Json(
-      "Spec" := "* * * 24",
-      "Enabled" := true,
-      "SpecType" := "cron",
-      "ProhibitOverlap" := true
+    json should equal (CJson.obj(
+      "Spec"            -> "* * * 24".asJson,
+      "Enabled"         -> true.asJson,
+      "SpecType"        -> "cron".asJson,
+      "ProhibitOverlap" -> true.asJson
     ))
   }
 
   it should "generate restart json" in {
     val json = NomadJson.restartJson(3)
-    json should equal(Json(
-      "Interval":= 5.minutes.toNanos,
-      "Attempts":= 3,
-      "Delay" := 15.seconds.toNanos,
-      "Mode" := "delay"
+    json should equal(CJson.obj(
+      "Interval" -> 5.minutes.toNanos.asJson,
+      "Attempts" -> 3.asJson,
+      "Delay"    -> 15.seconds.toNanos.asJson,
+      "Mode"     -> "delay".asJson
     ))
   }
 
   it should "generate empheral disk json" in {
     val json = NomadJson.ephemeralDiskJson(false,false,3)
-    json should equal(Json(
-      "Sticky" := false,
-      "Migrate" := false,
-      "SizeMB" := 3
+    json should equal(CJson.obj(
+      "Sticky"  -> false.asJson,
+      "Migrate" -> false.asJson,
+      "SizeMB"  -> 3.asJson
     ))
   }
 
   it should "generate task json with ports defined" in {
     val json = NomadJson.leaderTaskJson("name--1-0-0--abcdef12", image, env, NomadJson.BridgeMode, Some(ports), nomad, NamespaceName("qa"), "default", Set("required-tag1","required-tag2"))
-    json should equal(Json(
-      "Name" := "name--1-0-0--abcdef12",
-      "Driver" := "docker",
-      "Services":= List(Json(
-        "Name" := "name--1-0-0--abcdef12",
-        "PortLabel" := "http",
-        "Tags" := Set("qa","port--http","plan--default","required-tag1","required-tag2"),
-        "Checks" := List(Json(
-          "Name" := "tcp http name--1-0-0--abcdef12",
-          "Type" := "tcp",
-          "PortLabel":= "http",
-          "Args" := jNull,
-          "Command" := "",
-          "Id" := "",
-          "Path" := "",
-          "Protocol" := jNull,
-          "Interval":= 10000000000L,
-          "Timeout":= 4000000000L,
-          "TLSSkipVerify" := false
-        ))
-      )),
-      "leader" := true,
-      "Config" := Json(
-        "image" := "https://image",
-        "network_mode" := "bridge",
-        "port_map" := List(Json("http" := 8080)),
-        "auth" := List(Json(
-          "username" := "user",
-          "password" := "pass",
-          "server_address":= "addy",
-          "SSL" := true
-         ))
+    json should equal(CJson.obj(
+      "Name"   -> "name--1-0-0--abcdef12".asJson,
+      "Driver" -> "docker".asJson,
+      "Services" -> List(CJson.obj(
+        "Name"      -> "name--1-0-0--abcdef12".asJson,
+        "PortLabel" -> "http".asJson,
+        "Tags"      -> Set("qa","port--http","plan--default","required-tag1","required-tag2").asJson,
+        "Checks"    -> List(CJson.obj(
+          "Name"          -> "tcp http name--1-0-0--abcdef12".asJson,
+          "Type"          -> "tcp".asJson,
+          "PortLabel"     -> "http".asJson,
+          "Args"          -> CJson.Null,
+          "Command"       -> "".asJson,
+          "Id"            -> "".asJson,
+          "Path"          -> "".asJson,
+          "Protocol"      -> CJson.Null,
+          "Interval"      -> 10000000000L.asJson,
+          "Timeout"       -> 4000000000L.asJson,
+          "TLSSkipVerify" -> false.asJson
+        )).asJson
+      )).asJson,
+      "leader" -> true.asJson,
+      "Config" -> CJson.obj(
+        "image"        -> "https://image".asJson,
+        "network_mode" -> "bridge".asJson,
+        "port_map"     -> List(CJson.obj("http" -> 8080.asJson)).asJson,
+        "auth"         -> List(CJson.obj(
+          "username"       -> "user".asJson,
+          "password"       -> "pass".asJson,
+          "server_address" -> "addy".asJson,
+          "SSL"            -> true.asJson
+         )).asJson
       ),
-      "Vault" := Json(
-        "ChangeSignal" := "",
-        "ChangeMode" := "restart",
-        "Env" := true,
-        "Policies" := List("nelson__qa__name--1-0-0--abcdef12")
+      "Vault" -> CJson.obj(
+        "ChangeSignal" -> "".asJson,
+        "ChangeMode"   -> "restart".asJson,
+        "Env"          -> true.asJson,
+        "Policies"     -> List("nelson__qa__name--1-0-0--abcdef12").asJson
       ),
-      "Env" := Json(
-        "NELSON_STACKNAME":= "stackname",
-        "NELSON_DATACENTER" := "dc1"
+      "Env" -> CJson.obj(
+        "NELSON_STACKNAME"  -> "stackname".asJson,
+        "NELSON_DATACENTER" -> "dc1".asJson
       ),
-      "Resources" := Json(
-        "CPU" := 4600,
-        "MemoryMB" := 512,
-        "IOPS" := 0,
-        "Networks" := List(Json(
-          "mbits" := 1,
-          "DynamicPorts" := List(Json(
-            "Label" := "http",
-            "Value" := 0
-          ))
-        ))
+      "Resources" -> CJson.obj(
+        "CPU"      -> 4600.asJson,
+        "MemoryMB" -> 512.asJson,
+        "IOPS"     -> 0.asJson,
+        "Networks" -> List(CJson.obj(
+          "mbits"        -> 1.asJson,
+          "DynamicPorts" -> List(CJson.obj(
+            "Label" -> "http".asJson,
+            "Value" -> 0.asJson
+          )).asJson
+        )).asJson
       ),
-      "LogConfig" := Json(
-        "MaxFiles" := 10,
-        "MaxFileSizeMB" := 10
+      "LogConfig" -> CJson.obj(
+        "MaxFiles"      -> 10.asJson,
+        "MaxFileSizeMB" -> 10.asJson
       )
     ))
   }
 
   it should "generate task json without ports defined" in {
     val json = NomadJson.leaderTaskJson("name--1-0-0--abcdef12", image, env, NomadJson.HostMode, None, nomad, NamespaceName("qa"), "default", Set("required-tag1","required-tag2"))
-    json should equal(Json(
-      "Name" := "name--1-0-0--abcdef12",
-      "Driver" := "docker",
-      "leader" := true,
-      "Config" := Json(
-        "image" := "https://image",
-        "network_mode" := "host",
-        "auth" := List(Json(
-          "username" := "user",
-          "password" := "pass",
-          "server_address":= "addy",
-          "SSL" := true
-        ))
+    json should equal(CJson.obj(
+      "Name"   -> "name--1-0-0--abcdef12".asJson,
+      "Driver" -> "docker".asJson,
+      "leader" -> true.asJson,
+      "Config" -> CJson.obj(
+        "image"        -> "https://image".asJson,
+        "network_mode" -> "host".asJson,
+        "auth"         -> List(CJson.obj(
+          "username"       -> "user".asJson,
+          "password"       -> "pass".asJson,
+          "server_address" -> "addy".asJson,
+          "SSL"            -> true.asJson
+        )).asJson
       ),
-      "Vault" := Json(
-        "ChangeSignal" := "",
-        "ChangeMode" := "restart",
-        "Env" := true,
-        "Policies" := List("nelson__qa__name--1-0-0--abcdef12")
+      "Vault" -> CJson.obj(
+        "ChangeSignal" -> "".asJson,
+        "ChangeMode"   -> "restart".asJson,
+        "Env"          -> true.asJson,
+        "Policies"     -> List("nelson__qa__name--1-0-0--abcdef12").asJson
       ),
-      "Env" := Json(
-        "NELSON_STACKNAME":= "stackname",
-        "NELSON_DATACENTER" := "dc1"
+      "Env" -> CJson.obj(
+        "NELSON_STACKNAME"  -> "stackname".asJson,
+        "NELSON_DATACENTER" -> "dc1".asJson
       ),
-      "Resources" := Json(
-        "CPU" := 4600,
-        "MemoryMB" := 512,
-        "IOPS" := 0,
-        "Networks" := List(Json("mbits" := 1))
+      "Resources" -> CJson.obj(
+        "CPU"      -> 4600.asJson,
+        "MemoryMB" -> 512.asJson,
+        "IOPS"     -> 0.asJson,
+        "Networks" -> List(CJson.obj("mbits" -> 1.asJson)).asJson
       ),
-      "LogConfig" := Json(
-        "MaxFiles" := 10,
-        "MaxFileSizeMB" := 10
+      "LogConfig" -> CJson.obj(
+        "MaxFiles"      -> 10.asJson,
+        "MaxFileSizeMB" -> 10.asJson
       )
     ))
   }

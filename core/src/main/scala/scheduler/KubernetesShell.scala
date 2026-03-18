@@ -10,9 +10,7 @@ import cats.~>
 import cats.effect.IO
 import cats.implicits._
 
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
-import java.util.concurrent.ScheduledExecutorService
 
 /**
  * SchedulerOp interpreter that uses the Kubernetes API server.
@@ -21,26 +19,22 @@ import java.util.concurrent.ScheduledExecutorService
  */
 final class KubernetesShell(
   kubectl: Kubectl,
-  timeout: FiniteDuration,
-  scheduler: ScheduledExecutorService,
-  executionContext: ExecutionContext
+  timeout: FiniteDuration
 ) extends (SchedulerOp ~> IO) {
   import KubernetesShell._
-
-  private implicit val kubernetesShellExecutionContext = executionContext
 
   def apply[A](fa: SchedulerOp[A]): IO[A] = fa match {
     case Delete(_, deployment) =>
       delete(deployment)
-        .retryExponentially(limit = 3)(scheduler, kubernetesShellExecutionContext)
+        .retryExponentially(limit = 3)
         .timed(timeout)
     case Launch(_, _, _, _, _, _, bp) =>
       kubectl.apply(bp)
-        .retryExponentially(limit = 3)(scheduler, kubernetesShellExecutionContext)
+        .retryExponentially(limit = 3)
         .timed(timeout)
     case Summary(_, ns, stackName) =>
       summary(ns, stackName)
-        .retryExponentially(limit = 3)(scheduler, kubernetesShellExecutionContext)
+        .retryExponentially(limit = 3)
         .timed(timeout)
   }
 
@@ -48,8 +42,6 @@ final class KubernetesShell(
     val ns = deployment.namespace.name
     val stack = deployment.stackName
 
-    // We don't have enough information here to determine what exactly
-    // we're trying to delete so try each one in turn..
     val fallback =
       kubectl.deleteService(ns, stack).void.recoverWith {
         case err@KubectlError(_) if notFound(err) => kubectl.deleteCronJob(ns, stack).void.recoverWith {
@@ -62,8 +54,6 @@ final class KubernetesShell(
     deployment.renderedBlueprint.fold(fallback)(spec => kubectl.delete(spec).void)
   }
 
-  // Janky heuristic to see if an attempted (legacy) deletion failed because
-  // it was not found as opposed to some other reason like RBAC permissions
   private def notFound(error: KubectlError): Boolean =
     error.stderr.exists(_.startsWith("Error from server (NotFound)"))
 
@@ -78,10 +68,10 @@ final class KubernetesShell(
     kubectl.getDeployment(ns, stackName).map {
       case DeploymentStatus(available, unavailable) =>
         Some(DeploymentSummary(
-          running = available,
-          pending = unavailable,
+          running   = available,
+          pending   = unavailable,
           completed = None,
-          failed = None
+          failed    = None
         ))
     }
 
@@ -96,7 +86,7 @@ object KubernetesShell {
   private def jobStatusToSummary(js: JobStatus): DeploymentSummary =
     DeploymentSummary(
       running   = js.active,
-      pending   = None,         // Doesn't seem like K8s API gives this info
+      pending   = None,
       completed = js.succeeded,
       failed    = js.failed
     )

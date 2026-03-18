@@ -18,9 +18,7 @@ package nelson
 
 import nelson.Manifest.{Port => MPort,Route,BackendDestination}
 import nelson.ManifestValidator.{ManifestValidation}
-import nelson.ManifestValidator.Json._
-
-import argonaut.Argonaut._
+import nelson.ManifestValidator.Json.given
 
 import cats.data.NonEmptyList
 import cats.data.Validated.Invalid

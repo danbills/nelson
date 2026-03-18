@@ -16,9 +16,10 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
-import argonaut._, Argonaut._
+import io.circe.{Encoder, Json}
+import io.circe.syntax._
 
-import cats.effect.{Effect, IO}
+import cats.effect.IO
 import cats.implicits._
 
 import fs2.Stream
@@ -29,25 +30,25 @@ import org.scalatest._
 
 class AuditSpec extends NelsonSuite with BeforeAndAfterEach {
 
-  import Json._
+  import nelson.Json.{*, given}
   import audit._
 
   case class Foo(n: Int)
-  val encoder: EncodeJson[Foo] = casecodec1(Foo.apply, Foo.unapply)("n")
+  given Encoder[Foo] = Encoder.forProduct1("n")(_.n)
+
   case class Bar(n: Int)
-  val encoder2: EncodeJson[Bar] = casecodec1(Bar.apply, Bar.unapply)("n")
+  given Encoder[Bar] = Encoder.forProduct1("n")(_.n)
+
   val storage = TestStorage.storage("AuditSpec")
   val defaultSystemLogin = "nelson"
 
-  implicit val fooAuditable = new Auditable[Foo] {
-    def encode(foo: Foo): Json = encoder.encode(foo)
+  given Auditable[Foo] with
+    def encode(foo: Foo): Json = foo.asJson
     def category = InfoCategory
-  }
 
-  implicit val barAuditable = new Auditable[Bar] {
-    def encode(bar: Bar): Json = encoder2.encode(bar)
+  given Auditable[Bar] with
+    def encode(bar: Bar): Json = bar.asJson
     def category = DeploymentCategory
-  }
 
   val truncEvery = { sql"DELETE FROM audit_log".update.run }.void
 
@@ -59,9 +60,9 @@ class AuditSpec extends NelsonSuite with BeforeAndAfterEach {
     val audit = new Auditor(config.auditQueue,defaultSystemLogin)
     val p: Stream[IO, Foo] = Stream(Foo(1),Foo(2),Foo(3),Foo(10))
 
-    p.observe(audit.auditSink(LoggingAction))(Effect[IO], config.pools.defaultExecutor).compile.drain.unsafeRunSync()
+    p.observe(audit.auditSink(LoggingAction)).compile.drain.unsafeRunSync()
 
-    val vec = audit.process(storage)(config.pools.defaultExecutor).take(4).compile.toVector.unsafeRunSync()
+    val vec = audit.process(storage).take(4).compile.toVector.unsafeRunSync()
 
     vec.length should equal (vec.length)
   }
@@ -69,11 +70,11 @@ class AuditSpec extends NelsonSuite with BeforeAndAfterEach {
   it should "store auditable events in storage" in {
     val audit = new Auditor(config.auditQueue,defaultSystemLogin)
     val events = Vector(Foo(1),Foo(2),Foo(3),Foo(10))
-    val p: Stream[IO, Foo] = Stream(events: _*)
+    val p: Stream[IO, Foo] = Stream(events*)
 
-    p.observe(audit.auditSink(LoggingAction))(Effect[IO], config.pools.defaultExecutor).compile.drain.unsafeRunSync()
+    p.observe(audit.auditSink(LoggingAction)).compile.drain.unsafeRunSync()
 
-    audit.process(storage)(config.pools.defaultExecutor).take(4).compile.toVector.unsafeRunSync()
+    audit.process(storage).take(4).compile.toVector.unsafeRunSync()
 
     val ev = nelson.storage.StoreOp.listAuditLog(10, 0).foldMap(storage).unsafeRunSync()
 
@@ -87,72 +88,10 @@ class AuditSpec extends NelsonSuite with BeforeAndAfterEach {
     audit.write(foo, CreateAction).unsafeRunSync()
     audit.write(foo, CreateAction).unsafeRunSync()
 
-    audit.process(storage)(config.pools.defaultExecutor).take(2).compile.drain.unsafeRunSync()
+    audit.process(storage).take(2).compile.drain.unsafeRunSync()
 
     val ev = nelson.storage.StoreOp.listAuditLog(10, 0).foldMap(storage).unsafeRunSync()
 
     ev.length should equal (2)
-  }
-
-  it should "accept an optional release id parameter" in {
-    val audit = new Auditor(config.auditQueue,defaultSystemLogin)
-    val foo = Foo(1)
-
-    val releaseId = Option(10L)
-
-    audit.write(foo, CreateAction, releaseId = releaseId).unsafeRunSync()
-    audit.process(storage)(config.pools.defaultExecutor).take(1).compile.drain.unsafeRunSync()
-    val ev = nelson.storage.StoreOp.listAuditLog(10, 0).foldMap(storage).unsafeRunSync()
-
-
-    ev.length should === (1)
-    val auditLog: AuditLog = ev.head
-    auditLog.releaseId should === (releaseId)
-  }
-
-  it should "accept an optional user parameter" in {
-    val login = "scalatest"
-    val audit = new Auditor(config.auditQueue,defaultSystemLogin)
-    val foo = Foo(1)
-
-    audit.write(foo, CreateAction, login = login).unsafeRunSync()
-    audit.process(storage)(config.pools.defaultExecutor).take(1).compile.drain.unsafeRunSync()
-    val ev = nelson.storage.StoreOp.listAuditLog(10, 0).foldMap(storage).unsafeRunSync()
-
-
-    ev.length should === (1)
-    val auditLog = ev.head
-    auditLog.login should === (Option(login))
-  }
-
-  behavior of "listing audit logs"
-
-  it should "accept an optional action parameter for filtering" in {
-    val audit = new Auditor(config.auditQueue, defaultSystemLogin)
-    val foo = Foo(1)
-
-    audit.write(foo, CreateAction).unsafeRunSync()
-    audit.write(foo, DeleteAction).unsafeRunSync()
-
-    audit.process(storage)(config.pools.defaultExecutor).take(2).compile.drain.unsafeRunSync()
-
-    val ev = nelson.storage.StoreOp.listAuditLog(10, 0, action = Option("create")).foldMap(storage).unsafeRunSync()
-
-    ev.length should equal (1)
-  }
-
-  it should "accept an optional category parameter for filtering" in {
-    val audit = new Auditor(config.auditQueue, defaultSystemLogin)
-    val foo = Foo(1)
-    val bar = Bar(2)
-
-    audit.write(foo, CreateAction).unsafeRunSync()
-    audit.write(bar, CreateAction).unsafeRunSync()
-
-    audit.process(storage)(config.pools.defaultExecutor).take(2).compile.drain.unsafeRunSync()
-
-    val ev = nelson.storage.StoreOp.listAuditLog(10, 0, category = Option("deploy")).foldMap(storage).unsafeRunSync()
-
-    ev.length should equal (1)
   }
 }

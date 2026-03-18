@@ -18,16 +18,15 @@ package nelson
 
 import nelson.plans.Datacenters
 import Datacenter._
-import argonaut._
-import Argonaut._
+import io.circe.syntax._
 import cats.effect.IO
 import org.http4s._
-import org.http4s.argonaut._
+import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.Uri.uri
-import Json._
 
 class DatacentersSpec extends ServiceSpec {
+  import nelson.Json.{*, given}
 
   override def beforeAll(): Unit = {
     super.beforeAll()
@@ -47,18 +46,16 @@ class DatacentersSpec extends ServiceSpec {
 
   it should "allow users of admin github orgs to create manual deployments" in {
     val service = Datacenters(config).service
-    val req = Request[IO](POST, uri("/v1/deployments")).authed
-      .withBody(manual.asJson)
-    val resp = req.flatMap(service.orNotFound.run).unsafeRunSync
+    val req = Request[IO](POST, uri("/v1/deployments")).authed.withEntity(manual.asJson)
+    val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (Found)
   }
 
   it should "not allow any user to create manual deployments" in {
     val config0 = config.copy(git = config.git.copy(organizationAdminList = Nil))
     val service = Datacenters(config0).service
-    val req = Request[IO](POST, uri("/v1/deployments")).authed
-      .withBody(manual.asJson)
-    val resp = req.flatMap(service.orNotFound.run).unsafeRunSync()
+    val req = Request[IO](POST, uri("/v1/deployments")).authed.withEntity(manual.asJson)
+    val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (NotFound)
   }
 

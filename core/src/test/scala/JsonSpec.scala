@@ -16,26 +16,26 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
+import io.circe.parser.decode
 import org.scalatest._
 
 class JsonSpec extends FlatSpec with Matchers {
   import Util._
-  import Json._
-  import argonaut._
+  import nelson.Json.{*, given}
 
   it should "parse the github release defined in the docs" in {
     val out = for {
       a <- loadResourceAsString("/nelson/github.release.json").attempt.unsafeRunSync()
-      b <- Parse.decodeEither[Github.Release](a)
+      b <- decode[Github.Release](a).left.map(_.getMessage)
     } yield b
 
     out.isRight should equal (true)
   }
 
-  private def fromSample[A : DecodeJson](path: String)(f: A => Boolean) =
+  private def fromSample[A](path: String)(f: A => Boolean)(using io.circe.Decoder[A]) =
     (for {
       a <- loadResourceAsString(path).attempt.unsafeRunSync()
-      b <- Parse.decodeEither[A](a)
+      b <- decode[A](a).left.map(_.getMessage)
     } yield f(b)) should equal (Right(true))
 
   it should "parse the arbitrary events from Github" in {

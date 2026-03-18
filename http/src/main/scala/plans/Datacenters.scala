@@ -17,91 +17,107 @@
 package nelson
 package plans
 
-import _root_.argonaut._, Argonaut._
+import io.circe.{Encoder, Decoder, Json}
+import io.circe.syntax._
 import cats.effect.IO
 import cats.implicits._
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
-import org.http4s.argonaut._
 import org.http4s.headers.Location
 
 import java.time.Instant
 
 final case class Datacenters(config: NelsonConfig) extends Default {
-  import nelson.Json._
+  import nelson.Json.{*, given}
   import Datacenter._
   import Params._
 
-  private implicit val StackSummaryEncoder: EncodeJson[Nelson.StackSummary] =
-    EncodeJson { case (s: Nelson.StackSummary) =>
-      (("expiration"   := s.expiration) ->:
-       ("statuses"     := s.statuses) ->:
-       ("namespace"    := s.namespace.name.asString) ->:
-       ("dependencies" :=
-          ("inbound"   := s.inboundDependencies) ->:
-          ("outbound"  := s.outboundDependencies) ->:
-          jEmptyObject
-       ) ->: jEmptyObject
-      ).deepmerge(s.deployment.asJson)
+  private given Encoder[Nelson.StackSummary] =
+    Encoder.instance { (s: Nelson.StackSummary) =>
+      Json.obj(
+        "expiration"   -> s.expiration.asJson,
+        "statuses"     -> s.statuses.asJson,
+        "namespace"    -> s.namespace.name.asString.asJson,
+        "dependencies" -> Json.obj(
+          "inbound"  -> s.inboundDependencies.asJson,
+          "outbound" -> s.outboundDependencies.asJson
+        )
+      ).deepMerge(s.deployment.asJson)
     }
 
-  private implicit val NamespaceRefServiceNameEncoder: EncodeJson[(DatacenterRef, Namespace, GUID, ServiceName)] =
-    EncodeJson { case (d: DatacenterRef, n: Namespace, i: GUID, s: ServiceName) =>
-      (("datacenter" := d) ->:
-       ("namespace" := n.name.asString) ->:
-       ("guid" := i) ->:
-       jEmptyObject).deepmerge(s.asJson)
+  private given Encoder[(DatacenterRef, Namespace, GUID, ServiceName)] =
+    Encoder.instance { case (d, n, i, s) =>
+      Json.obj(
+        "datacenter" -> d.asJson,
+        "namespace"  -> n.name.asString.asJson,
+        "guid"       -> i.asJson
+      ).deepMerge(s.asJson)
     }
 
-  private implicit val NamespaceDeploymentWithStatusEncoder: EncodeJson[(DatacenterRef, Namespace, Deployment, DeploymentStatus)] =
-    EncodeJson { case ((d: DatacenterRef, n: Namespace, s: Deployment, ds: DeploymentStatus)) =>
-      (("datacenter" := d) ->:
-        ("namespace" := n.name.asString) ->:
-        ("status" := ds.toString) ->:
-        jEmptyObject
-      ).deepmerge(s.asJson)
+  private given Encoder[(DatacenterRef, Namespace, Deployment, DeploymentStatus)] =
+    Encoder.instance { case (d, n, s, ds) =>
+      Json.obj(
+        "datacenter" -> d.asJson,
+        "namespace"  -> n.name.asString.asJson,
+        "status"     -> ds.toString.asJson
+      ).deepMerge(s.asJson)
     }
 
-  private implicit val NamespaceEncoder: EncodeJson[Namespace] =
-    EncodeJson { (ns: Namespace) =>
-      ("id"    := ns.id) ->:
-      ("name"  := ns.name.asString) ->:
-      jEmptyObject
+  private given Encoder[Namespace] =
+    Encoder.instance { (ns: Namespace) =>
+      Json.obj(
+        "id"   -> ns.id.asJson,
+        "name" -> ns.name.asString.asJson
+      )
     }
 
-  private implicit val DatacenterEncoder: EncodeJson[(Datacenter, Set[Namespace])] =
-    EncodeJson { case (d: Datacenter, ns: Set[Namespace]) =>
-      ("name"           := d.name) ->:
-      ("datacenter_url" := linkTo(s"/v1/datacenters/${d.name}")(config.network)) ->:
-      ("namespaces"     := ns.map(n =>
-        ("deployments_url" := linkTo(s"/v1/deployments?dc=${d.name}&ns=${n.name.asString}")(config.network)) ->:
-        ("units_url"       := linkTo(s"/v1/units?dc=${d.name}&status=active,manual,deprecated")(config.network)) ->:
-        ("statistics_url"  := linkTo(s"/v1/statistics?dc=${d.name}&namespace=${n.name.asString}")(config.network)) ->: n.asJson).toList) ->:
-      jEmptyObject
+  private given Encoder[(Datacenter, Set[Namespace])] =
+    Encoder.instance { case (d, ns) =>
+      Json.obj(
+        "name"           -> d.name.asJson,
+        "datacenter_url" -> linkTo(s"/v1/datacenters/${d.name}")(config.network).asJson,
+        "namespaces"     -> ns.toList.map { n =>
+          Json.obj(
+            "deployments_url" -> linkTo(s"/v1/deployments?dc=${d.name}&ns=${n.name.asString}")(config.network).asJson,
+            "units_url"       -> linkTo(s"/v1/units?dc=${d.name}&status=active,manual,deprecated")(config.network).asJson,
+            "statistics_url"  -> linkTo(s"/v1/statistics?dc=${d.name}&namespace=${n.name.asString}")(config.network).asJson
+          ).deepMerge(n.asJson)
+        }.asJson
+      )
     }
 
-  private implicit val StatusEncoder: EncodeJson[(DeploymentStatus, Option[StatusMessage], Instant)] =
-    EncodeJson { case (s: DeploymentStatus, msg: Option[StatusMessage], ts: Instant) =>
-      ("status" := s.toString) ->:
-      ("message" :=? msg) ->?:
-      ("timestamp" := ts.toString) ->:
-      jEmptyObject
+  private given Encoder[(DeploymentStatus, Option[StatusMessage], Instant)] =
+    Encoder.instance { case (s, msg, ts) =>
+      val fields = List(
+        Some("status"    -> s.toString.asJson),
+        msg.map(m        => "message" -> m.asJson),
+        Some("timestamp" -> ts.toString.asJson)
+      ).flatten
+      Json.obj(fields*)
     }
 
-  implicit lazy val FeatureVersionCodec: CodecJson[FeatureVersion] =
-    CodecJson.casecodec2(FeatureVersion.apply, FeatureVersion.unapply)("major", "minor")
+  given Encoder[FeatureVersion] =
+    Encoder.forProduct2("major", "minor")(fv => (fv.major, fv.minor))
 
-  implicit lazy val ServiceNameCodec: CodecJson[Datacenter.ServiceName] =
-    CodecJson.casecodec2(Datacenter.ServiceName.apply, Datacenter.ServiceName.unapply)("service_type", "version")
+  given Decoder[FeatureVersion] =
+    Decoder.forProduct2("major", "minor")(FeatureVersion.apply)
 
-  implicit val logFileEncoder: EncodeJson[(Int, List[String])] = EncodeJson[(Int,List[String])](
-    (r: (Int,List[String])) =>
-      ("offset" := r._1) ->:
-      ("content" := r._2) ->:
-      jEmptyObject
-  )
+  given Encoder[Datacenter.ServiceName] =
+    Encoder.forProduct2("service_type", "version")(sn => (sn.serviceType, sn.version))
 
-  val service: HttpService[IO] = HttpService[IO] {
+  given Decoder[Datacenter.ServiceName] =
+    Decoder.forProduct2("service_type", "version")(Datacenter.ServiceName.apply)
+
+  given Encoder[(Int, List[String])] =
+    Encoder.instance { (r: (Int, List[String])) =>
+      Json.obj(
+        "offset"  -> r._1.asJson,
+        "content" -> r._2.asJson
+      )
+    }
+
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
 
     /*
      * GET /v1/datacenters

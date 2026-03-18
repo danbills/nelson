@@ -17,12 +17,11 @@
 package nelson
 
 import org.http4s._
-import org.http4s.argonaut._
+import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.server.staticcontent.{FileService, fileService, ResourceService, resourceService}
-import org.http4s.server.blaze._
-import _root_.argonaut._
-import Argonaut._
+import org.http4s.server.blaze.BlazeServerBuilder
+import io.circe.syntax._
 
 import cats.data.{Kleisli, OptionT}
 import cats.effect.IO
@@ -33,9 +32,7 @@ import nelson.plans.ClientValidation
 object Server {
   private val log = Logger[Server.type]
 
-    Kleisli[OptionT[IO, ?], Request[IO], Response[IO]](_ => OptionT[IO, Response[IO]](IO.pure(None)))
-
-  def api(config: NelsonConfig): HttpService[IO] = List(
+  def api(config: NelsonConfig): HttpRoutes[IO] = List(
     plans.Repos(config),
     plans.Auth(config),
     plans.Misc(config),
@@ -45,28 +42,26 @@ object Server {
     plans.Audit(config),
     plans.Loadbalancers(config),
     plans.Blueprints(config)
-  ).foldLeft(HttpService.empty[IO])(_ <+> _.service)
+  ).foldLeft(HttpRoutes.empty[IO])(_ <+> _.service)
 
-  val resources: HttpService[IO] = Kleisli[OptionT[IO, ?], Request[IO], Response[IO]] {
+  val resources: HttpRoutes[IO] = Kleisli[[A] =>> OptionT[IO, A], Request[IO], Response[IO]] {
     // We want to fall through if someone tries to list a directory
-    case req if req.pathInfo endsWith "/" => OptionT[IO, Response[IO]](IO.pure(None))
+    case req if req.uri.path.renderString.endsWith("/") => OptionT[IO, Response[IO]](IO.pure(None))
     case req => OptionT
       resourceService[IO](ResourceService.Config("/nelson/www")).run(req)
   }
 
-  def files(filePath: String): HttpService[IO] = Kleisli[OptionT[IO, ?], Request[IO], Response[IO]] {
+  def files(filePath: String): HttpRoutes[IO] = Kleisli[[A] =>> OptionT[IO, A], Request[IO], Response[IO]] {
     // We want to fall through if someone tries to list a directory
-    case req if req.pathInfo endsWith "/" =>
+    case req if req.uri.path.renderString.endsWith("/") =>
       OptionT[IO, Response[IO]](IO.pure(None))
     case req =>
       fileService[IO](FileService.Config(filePath)).run(req)
   }
 
   /** Catch internal server errors, log them, and return a JSON response */
-  def json500(service: HttpService[IO]): HttpService[IO] =
-    // I envisioned a handleError, but resolving MonadError is one of the
-    // hard problems of computer science.
-    Kleisli[OptionT[IO, ?], Request[IO], Response[IO]] { req =>
+  def json500(service: HttpRoutes[IO]): HttpRoutes[IO] =
+    Kleisli[[A] =>> OptionT[IO, A], Request[IO], Response[IO]] { req =>
       service.run(req).handleErrorWith(err => OptionT.liftF(err match {
         case e@(LoadError(_) | ProblematicRepoManifest(_)) =>
           log.info(s"Unable to load repository YAML file: ${e.getMessage}")
@@ -93,10 +88,10 @@ object Server {
       }))
     }
 
-  def ui(config: NelsonConfig): HttpService[IO] =
+  def ui(config: NelsonConfig): HttpRoutes[IO] =
     plans.UI(config).service
 
-  def service(config: NelsonConfig): HttpService[IO] = {
+  def service(config: NelsonConfig): HttpRoutes[IO] = {
     val allServices =
       if(config.ui.enabled)
         config.ui.filePath.map(p =>
@@ -108,11 +103,12 @@ object Server {
     json500(ClientValidation.filterUserAgent(allServices)(config))
   }
 
-  def start(config: NelsonConfig): IO[org.http4s.server.Server[IO]] = {
-    BlazeBuilder[IO]
+  def start(config: NelsonConfig): IO[org.http4s.server.Server] = {
+    BlazeServerBuilder[IO]
       .withIdleTimeout(config.network.idleTimeout)
       .bindHttp(config.network.bindPort, config.network.bindHost)
-      .mountService(service(config))
-      .start
+      .withHttpApp(service(config).orNotFound)
+      .resource
+      .use(_ => IO.never)
   }
 }

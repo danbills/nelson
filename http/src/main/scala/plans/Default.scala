@@ -17,9 +17,10 @@
 package nelson
 package plans
 
-import _root_.argonaut.{DecodeResult => _, _}, Argonaut._
+import io.circe.{Encoder, Decoder, Json}
+import io.circe.syntax._
 import org.http4s._
-import org.http4s.argonaut._
+import org.http4s.circe._
 import org.http4s.headers.Location
 import org.http4s.dsl.io._
 import journal.Logger
@@ -34,56 +35,42 @@ abstract class Default extends Product with Serializable { self =>
   protected val log = Logger[this.type]
   protected val CookieName = "nelson.session"
 
-  def service: HttpService[IO]
+  def service: HttpRoutes[IO]
 
   def config: NelsonConfig
 
-  protected def json[A : EncodeJson](a: NelsonK[A]): IO[Response[IO]] =
+  protected def json[A: Encoder](a: NelsonK[A]): IO[Response[IO]] =
     self.jsonHandler(a)(None)
 
-  protected def jsonF[A : EncodeJson](a: NelsonK[A])(rf: A => IO[Response[IO]]): IO[Response[IO]] =
+  protected def jsonF[A: Encoder](a: NelsonK[A])(rf: A => IO[Response[IO]]): IO[Response[IO]] =
     self.jsonHandler(a)(Some(rf))
 
-  protected def jsonHandler[A : EncodeJson](a: NelsonK[A])(rf: Option[A => IO[Response[IO]]]): IO[Response[IO]] = {
+  protected def jsonHandler[A: Encoder](a: NelsonK[A])(rf: Option[A => IO[Response[IO]]]): IO[Response[IO]] = {
     val handler: A => IO[Response[IO]] = rf.getOrElse(a => Ok(a.asJson))
     a(config).flatMap(handler)
   }
 
   protected def handleMessageFailure(req: Request[IO], mf: MessageFailure): IO[Response[IO]] = {
-    log.error(s"Error handling request ${req.method} ${req.pathInfo}", mf)
+    log.error(s"Error handling request ${req.method} ${req.uri.path}", mf)
     mf match {
       case MalformedMessageBodyFailure(_, _) =>
-        BadRequest(Map(
-          "message" -> "Could not parse JSON"
-        ).asJson)
-      case InvalidMessageBodyFailure(details, None) =>
+        BadRequest(Map("message" -> "Could not parse JSON").asJson)
+      case InvalidMessageBodyFailure(details, _) =>
         UnprocessableEntity(Map(
           "message" -> "Validation failed",
-          // This dumps the argonaut CursorHistory, which is not a
-          // spectacular rendering, but gives some idea what failed.
+          // Gives some indication what the user needs to fix.
           "cursor_history" -> details
         ).asJson)
       case mf: MessageFailure =>
-        for {
-          resp <- mf.toHttpResponse[IO](req.httpVersion)
-          msg <- resp.as[String]
-          resp0 <- resp.withBody(Map("message" -> msg).asJson)
-        } yield resp0
+        val resp = mf.toHttpResponse[IO](req.httpVersion)
+        resp.as[String].map(msg => resp.withEntity(Map("message" -> msg).asJson))
     }
   }
 
-  protected def decode[A : DecodeJson](req: Request[IO])(f: A => IO[Response[IO]]): IO[Response[IO]] = {
-    // http4s puts the cursor history in the "details", along with the JSON.
-    // We don't want to reflect the JSON back to the user, but we do want to
-    // give some indication what the user needs to fix.
-    jsonDecoder[IO].flatMapR[A] { json =>
-      DecodeJson.of[A].decodeJson(json).fold(
-        (_, history) => DecodeResult.failure(InvalidMessageBodyFailure(s"$history")),
-        DecodeResult.success(_))}
-      .decode(req, true).fold(
-        mf => handleMessageFailure(req, mf),
-        f).flatten
-  }
+  protected def decode[A: Decoder](req: Request[IO])(f: A => IO[Response[IO]]): IO[Response[IO]] =
+    jsonOf[IO, A].decode(req, strict = false)
+      .fold(mf => handleMessageFailure(req, mf), f)
+      .flatten
 
   object IsAuthenticated {
     def unapply[A](req: Request[IO]): Option[Session] = {
@@ -146,8 +133,8 @@ object ClientValidation {
       config.httpUserAgents.forall(agentDoesntMatch(ua))
   }
 
-  def filterUserAgent(service: HttpService[IO])
-    (config: NelsonConfig): HttpService[IO] = Kleisli { req =>
+  def filterUserAgent(service: HttpRoutes[IO])
+    (config: NelsonConfig): HttpRoutes[IO] = Kleisli { req =>
     val maybeUserAgent = req.headers.get(headers.`User-Agent`)
     if (isAllowedUserAgent(maybeUserAgent)(config.bannedClients)) service(req)
     else OptionT.liftF(BadRequest("User-Agent not allowed. Please upgrade your client to the latest version."))

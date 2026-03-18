@@ -19,7 +19,7 @@ package nelson
 import cats.~>
 import cats.effect.IO
 import cats.syntax.applicativeError._
-import fs2.Sink
+import fs2.Pipe
 
 import helm.ConsulOp
 import helm.ConsulOp.ConsulOpF
@@ -54,10 +54,10 @@ object Http4sConsul {
   def client(consul: Infrastructure.Consul, http4sClient: Client[IO]): ConsulOp ~> IO =
     new Http4sConsulClient(baseUri(consul), http4sClient, token(consul), creds(consul))
 
-  def consulSink: Sink[IO, (Datacenter,ConsulOpF[Unit])] =
-    Sink {
-      case (dc, op) => helm.run(dc.consul, op) recover {
+  def consulSink: Pipe[IO, (Datacenter, ConsulOpF[Unit]), Nothing] =
+    _.evalMap { case (dc, op) =>
+      helm.run(dc.consul, op).recover {
         case NonFatal(e) => log.error(s"error while attempting to perform consul operation", e)
       }
-    }
+    }.drain
 }

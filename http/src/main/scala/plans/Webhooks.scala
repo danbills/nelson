@@ -19,11 +19,10 @@ package plans
 
 import org.http4s._
 import org.http4s.dsl.io._
-import _root_.argonaut._, Argonaut._
 import cats.effect.IO
 
 final case class WebHooks(config: NelsonConfig) extends Default {
-  import nelson.Json.GithubEventDecoder
+  import nelson.Json.{*, given}
 
   /**
    * This function has to dispatch whatever type of Github.Event
@@ -31,7 +30,7 @@ final case class WebHooks(config: NelsonConfig) extends Default {
    * nelson function. This is a little hacky, but its the only
    * way to handle the arbitrary message shapes that Github sends.
    */
-  val service: HttpService[IO] = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     case req @ POST -> Root / "listener" => {
       decode[Github.Event](req){
         case Github.PingEvent(_) =>

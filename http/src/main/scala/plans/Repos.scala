@@ -17,14 +17,15 @@
 package nelson
 package plans
 
+import io.circe.{Encoder, Json}
+import io.circe.syntax._
 import org.http4s._
+import org.http4s.circe._
 import org.http4s.dsl.io._
-import org.http4s.argonaut._
-import _root_.argonaut._, Argonaut._
 import cats.effect.IO
 
 final case class Repos(config: NelsonConfig) extends Default {
-  import nelson.Json._
+  import nelson.Json.{*, given}
 
   object Owner extends QueryParamDecoderMatcher[String]("owner")
 
@@ -34,11 +35,11 @@ final case class Repos(config: NelsonConfig) extends Default {
 
   object Limit extends QueryParamDecoderMatcher[Int]("limit")
 
-  private implicit val ServiceNameEncoder: EncodeJson[Datacenter.ServiceName] =
-    implicitly[EncodeJson[String]].contramap(_.toString)
+  private given Encoder[Datacenter.ServiceName] =
+    Encoder[String].contramap(_.toString)
 
-  private implicit val DeploymentStatusEncoder: EncodeJson[DeploymentStatus] =
-    implicitly[EncodeJson[String]].contramap(_.toString)
+  private given Encoder[DeploymentStatus] =
+    Encoder[String].contramap(_.toString)
 
   /**
    * {
@@ -54,18 +55,19 @@ final case class Repos(config: NelsonConfig) extends Default {
    *   "deployment_url": "http://.../v1/deployments/6fdsfse245"
    * }
    */
-  private implicit val ReleasedDeploymentEncoder: EncodeJson[ReleasedDeployment] =
-    EncodeJson { (d: ReleasedDeployment) =>
-      ("id" := d.id) ->:
-      ("unit_id" := d.unit.id) ->:
-      ("name" := d.unit.name) ->:
-      ("description" := d.unit.description) ->:
-      ("dependencies" := d.unit.dependencies.toList) ->:
-      ("hash" := d.hash) ->:
-      ("timestamp" := d.timestamp.toString) ->:
-      ("status" := d.state) ->:
-      ("deployment_url" := linkTo(s"/v1/deployments/${d.guid}")(config.network)) ->:
-      jEmptyObject
+  private given Encoder[ReleasedDeployment] =
+    Encoder.instance { (d: ReleasedDeployment) =>
+      Json.obj(
+        "id"             -> d.id.asJson,
+        "unit_id"        -> d.unit.id.asJson,
+        "name"           -> d.unit.name.asJson,
+        "description"    -> d.unit.description.asJson,
+        "dependencies"   -> d.unit.dependencies.toList.asJson,
+        "hash"           -> d.hash.asJson,
+        "timestamp"      -> d.timestamp.toString.asJson,
+        "status"         -> d.state.asJson,
+        "deployment_url" -> linkTo(s"/v1/deployments/${d.guid}")(config.network).asJson
+      )
     }
 
   /**
@@ -78,17 +80,18 @@ final case class Repos(config: NelsonConfig) extends Default {
    *   "deloyments": [ ... ]
    * }
    */
-  private implicit val ReleasedPairEncoder: EncodeJson[(Released,List[ReleasedDeployment])] =
-    EncodeJson { (t: (Released,List[ReleasedDeployment])) =>
-      ("id" := t._1.referenceId) ->:
-      ("slug"    := t._1.slug.toString) ->:
-      ("version" := t._1.version.toString) ->:
-      ("timestamp" := t._1.timestamp.toString) ->:
-      ("deployments" := t._2) ->:
-      jEmptyObject
+  private given Encoder[(Released, List[ReleasedDeployment])] =
+    Encoder.instance { (t: (Released, List[ReleasedDeployment])) =>
+      Json.obj(
+        "id"          -> t._1.referenceId.asJson,
+        "slug"        -> t._1.slug.toString.asJson,
+        "version"     -> t._1.version.toString.asJson,
+        "timestamp"   -> t._1.timestamp.toString.asJson,
+        "deployments" -> t._2.asJson
+      )
     }
 
-  val service = HttpService[IO] {
+  val service: HttpRoutes[IO] = HttpRoutes.of[IO] {
     //////////////////// LISTING ////////////////////
 
     // GET /v1/repos?owner=tim

@@ -20,8 +20,7 @@ object GitFixtures {
   import cats.~>
   import cats.effect.IO
   import Github._
-  import nelson.Json._
-  import argonaut._, Argonaut._
+  import nelson.Json.{*, given}
   import Util._
   import org.http4s.Uri
 

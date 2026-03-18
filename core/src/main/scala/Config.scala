@@ -33,7 +33,8 @@ import com.amazonaws.auth.AWSStaticCredentialsProvider
 import com.amazonaws.auth.{AWSCredentialsProviderChain, AWSStaticCredentialsProvider, BasicAWSCredentials, EC2ContainerCredentialsProviderWrapper}
 
 import cats.~>
-import cats.effect.{Effect, IO}
+import cats.effect.IO
+import cats.effect.std.Queue
 import cats.implicits._
 
 import java.nio.file.{Path, Paths}
@@ -44,7 +45,6 @@ import journal.Logger
 
 import org.http4s.Uri
 import org.http4s.client.Client
-import org.http4s.client.blaze._
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -228,8 +228,6 @@ final case class ExpirationPolicyConfig(
 )
 
 import java.net.URI
-import fs2.async.boundedQueue
-import fs2.async.mutable.Queue
 
 final case class Pools(defaultPool: ExecutorService,
                        serverPool: ExecutorService,
@@ -356,7 +354,7 @@ final case class NelsonConfig(
   expirationPolicy: ExpirationPolicyConfig,
   discoveryDelay: FiniteDuration,
   queue: Queue[IO, Manifest.Action],
-  auditQueue: Queue[IO, AuditEvent[_]]
+  auditQueue: Queue[IO, AuditEvent[?]]
 ){
 
   val log = Logger[NelsonConfig.type]
@@ -388,20 +386,20 @@ final case class NelsonConfig(
 }
 
 import knobs.{Config => KConfig}
-import doobie.imports._
+import doobie._
+import doobie.implicits._
 
 object Config {
 
   private[this] val log = Logger[Config.type]
 
-  def readConfig(cfg: KConfig, httpBuilder: BlazeClientConfig => IO[Client[IO]], xa: DatabaseConfig => Transactor[IO]): IO[NelsonConfig] = {
+  def readConfig(cfg: KConfig, httpClient: IO[Client[IO]], xa: DatabaseConfig => Transactor[IO]): IO[NelsonConfig] = {
     // TIM: Don't turn this on for any deployed version; it will dump all the credentials
     // into the log, so be careful.
     // log.debug("configured with the following knobs:")
     // log.debug(cfg.toString)
 
     val timeout = cfg.require[FiniteDuration]("nelson.timeout")
-    val http = httpBuilder(BlazeClientConfig.defaultConfig.copy(requestTimeout = timeout))
 
     val pools = readPools(cfg.subconfig("nelson.pools"))
 
@@ -411,7 +409,7 @@ object Config {
 
     val workflowConf = readWorkflowLogger(cfg.subconfig("nelson.workflow-logger"))
     val workflowlogger =
-      boundedQueue[IO, (ID,String)](workflowConf.bufferLimit)(Effect[IO], pools.defaultExecutor).
+      Queue.bounded[IO, (ID,String)](workflowConf.bufferLimit).
         map(new WorkflowLogger(_, workflowConf.filePath))
 
     val databasecfg = readDatabase(cfg.subconfig("nelson.database"))
@@ -441,19 +439,17 @@ object Config {
       dcs      <- readDatacenters(
         cfg = cfg.subconfig("nelson.datacenters"),
         dockercfg = dockercfg,
-        schedulerPool = pools.schedulingPool,
-        ec = pools.defaultExecutor,
         stg = storage,
         logger = wflogger
       )
       pipeline   =  readPipeline(cfg.subconfig("nelson.pipeline"))
-      queue      <- boundedQueue[IO, Manifest.Action](pipeline.bufferLimit)(Effect[IO], pools.defaultExecutor)
+      queue      <- Queue.bounded[IO, Manifest.Action](pipeline.bufferLimit)
 
       audit      =  readAudit(cfg.subconfig("nelson.audit"))
-      auditQueue <- boundedQueue[IO, AuditEvent[_]](audit.bufferLimit)(Effect[IO], pools.defaultExecutor)
-      httpClient <- http
-      gitClient  = new Github.GithubHttp(gitcfg, httpClient, pools.defaultExecutor)
-      slackClient = readSlack(cfg.subconfig("nelson.slack")).map(new SlackHttp(_, httpClient))
+      auditQueue <- Queue.bounded[IO, AuditEvent[?]](audit.bufferLimit)
+      http       <- httpClient
+      gitClient  = new Github.GithubHttp(gitcfg, http)
+      slackClient = readSlack(cfg.subconfig("nelson.slack")).map(new SlackHttp(_, http))
     } yield {
       NelsonConfig(
         git                = gitcfg,
@@ -470,7 +466,7 @@ object Config {
         pipeline           = pipeline,
         audit              = audit,
         template           = readTemplate(cfg),
-        http               = httpClient,
+        http               = http,
         pools              = pools,
         interpreters       = Interpreters(gitClient,storage,slackClient,email),
         workflowLogger     = wflogger,
@@ -537,8 +533,6 @@ object Config {
 
   private[nelson] def readDatacenters(cfg: KConfig,
                                       dockercfg: DockerConfig,
-                                      schedulerPool: ScheduledExecutorService,
-                                      ec: ExecutionContext,
                                       stg: StoreOp ~> IO,
                                       logger: LoggingOp ~> IO): IO[List[Datacenter]] = {
 
@@ -558,7 +552,7 @@ object Config {
           kfg.lookup[String](s"proxy-credentials.password")
         ).mapN((a,b) => Infrastructure.ProxyCredentials(a,b))
 
-      val dockerClient = InstrumentedDockerClient(dockercfg.connection, new Docker(dockercfg, schedulerPool, ec))
+      val dockerClient = InstrumentedDockerClient(dockercfg.connection, new Docker(dockercfg))
 
       val lb = readAwsInfrastructure(kfg.subconfig("infrastructure.loadbalancer.aws")).map(cfg => new loadbalancers.Aws(cfg))
 
@@ -614,7 +608,7 @@ object Config {
       val scheduling: IO[SchedulerOp ~> IO] = kfg.lookup[String]("infrastructure.scheduler") match {
         case Some("kubernetes") => {
           withKubectl((kubectl, timeout) =>
-            IO.pure(new KubernetesShell(kubectl, timeout, schedulerPool,  ec)))
+            IO.pure(new KubernetesShell(kubectl, timeout)))
         }
         case Some("nomad") => IO.raiseError(NomadNotImplemented)
         case _ => IO.raiseError(new IllegalArgumentException("At least one scheduler must be defined per datacenter"))
@@ -632,7 +626,7 @@ object Config {
           case Some("kubernetes") => for {
             a <- IO.pure(StubbedConsulClient)
             b <- withKubectl((kubectl, timeout) =>
-              IO.pure(new KubernetesHealthClient(kubectl, timeout, ec)))
+              IO.pure(new KubernetesHealthClient(kubectl, timeout)))
           } yield (a,b)
 
           case Some("noop") | None => IO.pure((StubbedConsulClient, health.StubbedHealthClient))
@@ -857,11 +851,17 @@ object Config {
     )
 
   private def http4sClient(timeout: Duration, maxTotalConnections: Int = 10, sslContext: Option[SSLContext] = None): IO[Client[IO]] = {
-    val config = BlazeClientConfig.defaultConfig.copy(
-      requestTimeout = timeout,
-      maxTotalConnections = maxTotalConnections,
-      sslContext = sslContext
-    )
-    Http1Client(config)
+    import org.http4s.ember.client.EmberClientBuilder
+    import scala.concurrent.duration.FiniteDuration
+    val requestTimeout = timeout match {
+      case fd: FiniteDuration => fd
+      case _ => scala.concurrent.duration.Duration(30, "s").asInstanceOf[FiniteDuration]
+    }
+    EmberClientBuilder.default[IO]
+      .withTimeout(requestTimeout)
+      .withMaxTotal(maxTotalConnections)
+      .build
+      .allocated
+      .map(_._1)
   }
 }
