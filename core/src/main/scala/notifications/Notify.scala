@@ -42,7 +42,7 @@ object Notify {
     |in ${ns.asString} $dc
     """.stripMargin
 
-  def sendDeployedNotifications(unit: UnitDef @@ Versioned, actionConfig: Manifest.ActionConfig)(cfg: NelsonConfig): IO[Unit] = {
+  def sendDeployedNotifications(unit: Manifest.Versioned[UnitDef], actionConfig: Manifest.ActionConfig)(cfg: NelsonConfig): IO[Unit] = {
     val name = Versioned.unwrap(unit).name
     val sn = StackName(name, unit.version, actionConfig.hash)
     val msg = deployedTemplate(actionConfig.datacenter.name,actionConfig.namespace.name,sn)

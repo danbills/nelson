@@ -285,22 +285,22 @@ object ManifestValidator {
   }
 
   object Json {
-    import argonaut._, Argonaut._
-    import argonaut.DecodeResultCats._
-    import cats.syntax.apply._
+    import io.circe.{Encoder, Decoder}
+    import io.circe.syntax._
+    import cats.implicits._
 
-    implicit val codecNelsonUnit: CodecJson[NelsonUnit] =
-      CodecJson.casecodec2(NelsonUnit.apply, NelsonUnit.unapply)("kind", "name")
+    given Encoder[NelsonUnit] = Encoder.forProduct2("kind", "name")(u => (u.kind, u.name))
+    given Decoder[NelsonUnit] = Decoder.forProduct2("kind", "name")(NelsonUnit.apply)
 
-    implicit val decodeManifestValidation: DecodeJson[ManifestValidation] = DecodeJson(c =>
-      ((c --\ "units").as[List[NelsonUnit]],
-        (c --\ "manifest").as[Base64].map(_.decoded)
-      ).mapN(ManifestValidation.apply)
-    )
-  implicit val VersionDecode: DecodeJson[FeatureVersion] =
-    DecodeJson.optionDecoder(_.string.flatMap { a =>
-      FeatureVersion.fromString(a)
-    }, "FeatureVersion")
+    given Decoder[ManifestValidation] = Decoder.instance { c =>
+      for {
+        units    <- c.downField("units").as[List[NelsonUnit]]
+        manifest <- c.downField("manifest").as[Base64].map(_.decoded)
+      } yield ManifestValidation(units, manifest)
+    }
 
+    given Decoder[FeatureVersion] = Decoder[String].emap { a =>
+      FeatureVersion.fromString(a).toRight(s"Invalid FeatureVersion: $a")
+    }
   }
 }

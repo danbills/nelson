@@ -56,7 +56,7 @@ object StoreOp {
   def deleteRepositories(nel: NonEmptyList[Repo]): StoreOpF[Unit] =
     Free.liftF(DeleteRepositories(nel))
 
-  def addUnit(unit: UnitDef @@ Versioned, repoId: ID): StoreOpF[Unit] =
+  def addUnit(unit: Manifest.Versioned[UnitDef], repoId: ID): StoreOpF[Unit] =
     Free.liftF(AddUnit(unit, repoId))
 
   def createRelease(r: Github.DeploymentEvent): StoreOpF[Unit] =
@@ -223,7 +223,7 @@ object StoreOp {
   def insertLoadbalancerDeployment(lbid: ID, nsid: ID, hash: String, address: String): StoreOpF[ID] =
     Free.liftF(InsertLoadbalancerDeployment(lbid, nsid, hash, address))
 
-  def insertLoadbalancerIfAbsent(lb: Manifest.Loadbalancer @@ Versioned, repoId: ID): StoreOpF[ID] =
+  def insertLoadbalancerIfAbsent(lb: Manifest.Versioned[Manifest.Loadbalancer], repoId: ID): StoreOpF[ID] =
     Free.liftF(InsertLoadbalancerIfAbsent(lb, repoId))
 
   def deleteLoadbalancerDeployment(lbid: ID): StoreOpF[Int] =
@@ -261,7 +261,7 @@ object StoreOp {
   final case class InsertOrUpdateRepositories(list: List[Repo]) extends StoreOp[Unit]
   final case class LinkRepositoriesToUser(list: List[Repo], u: User) extends StoreOp[Unit]
   final case class DeleteRepositories(nel: NonEmptyList[Repo]) extends StoreOp[Unit]
-  final case class AddUnit(unit: UnitDef @@ Versioned, repo_id: ID) extends StoreOp[Unit]
+  final case class AddUnit(unit: Manifest.Versioned[UnitDef], repo_id: ID) extends StoreOp[Unit]
   final case class CreateRelease(r: Github.DeploymentEvent) extends StoreOp[Unit]
   final case class KillRelease(slug: Slug, version: String) extends StoreOp[Either[Throwable, Unit]]
   final case class ListRecentReleasesForRepository(slug: Slug) extends StoreOp[SortedMap[Released, List[ReleasedDeployment]]]
@@ -310,7 +310,7 @@ object StoreOp {
   final case class GetLoadbalancer(name: String, v: MajorVersion) extends StoreOp[Option[Datacenter.DCLoadbalancer]]
   final case class InsertLoadbalancerDeployment(lbid: ID, nsid: ID, hash: String, address: String) extends StoreOp[ID]
   final case class DeleteLoadbalancerDeployment(lbid: ID) extends StoreOp[Int]
-  final case class InsertLoadbalancerIfAbsent(lb: Manifest.Loadbalancer @@ Versioned, repoId: ID) extends StoreOp[ID]
+  final case class InsertLoadbalancerIfAbsent(lb: Manifest.Versioned[Manifest.Loadbalancer], repoId: ID) extends StoreOp[ID]
   final case class CountDeploymentsByStatus(since: Long) extends StoreOp[List[(String, Int)]]
   final case class GetMostAndLeastDeployed(since: Long, number: Int, sortOrder: String) extends StoreOp[List[(String, Int)]]
   final case class FindLastReleaseDeploymentStatus(s: Slug, u: UnitName) extends StoreOp[Option[DeploymentStatus]]

@@ -16,7 +16,7 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
-import _root_.argonaut._, Argonaut._
+import io.circe.{Encoder, Decoder, DecodingFailure}
 import java.nio.charset.StandardCharsets
 
 final case class Base64(decoded: String) extends AnyVal
@@ -25,11 +25,12 @@ object Base64 {
   private val base64Decoder = java.util.Base64.getDecoder
   private val base64Encoder = java.util.Base64.getEncoder
 
-  implicit val encodeBase64: EncodeJson[Base64] = EncodeJson(s =>
-    jString(new String(base64Encoder.encode(s.decoded.getBytes("UTF-8")), StandardCharsets.UTF_8)))
+  given Encoder[Base64] = Encoder[String].contramap(s =>
+    new String(base64Encoder.encode(s.decoded.getBytes("UTF-8")), StandardCharsets.UTF_8)
+  )
 
-  implicit val decodeBase64: DecodeJson[Base64] = DecodeJson.optionDecoder(
-    _.string.flatMap(s =>
-      DecodeJson.tryTo(Base64(new String(base64Decoder.decode(s), StandardCharsets.UTF_8)))),
-    "base-64 encoded string")
+  given Decoder[Base64] = Decoder[String].emap { s =>
+    scala.util.Try(Base64(new String(base64Decoder.decode(s), StandardCharsets.UTF_8)))
+      .toEither.left.map(_.getMessage)
+  }
 }

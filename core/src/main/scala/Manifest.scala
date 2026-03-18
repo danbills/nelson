@@ -43,9 +43,16 @@ final case class Manifest(
 
 object Manifest {
 
-  trait Versioned
+  /** Opaque type tag marking a value as having been version-stamped.
+   *  Replaces the Scalaz-style `@@` phantom type from Tag.scala.
+   */
+  opaque type Versioned[+A] = A
 
-  val Versioned = Tag.of[Versioned]
+  object Versioned {
+    def apply[A](a: A): Versioned[A] = a
+    def unwrap[A](v: Versioned[A]): A = v
+    def subst[F[_], A](fa: F[A]): F[Versioned[A]] = fa.asInstanceOf[F[Versioned[A]]]
+  }
 
   final case class UnitDef(
     name: String,
@@ -296,7 +303,7 @@ object Manifest {
   /*
    * Saturates the manifest with all the bits that a unit or loadbalancer needs for deployment.
    */
-  def saturateManifest(m: Manifest)(e: Github.Deployment): IO[Manifest @@ Versioned] = {
+  def saturateManifest(m: Manifest)(e: Github.Deployment): IO[Versioned[Manifest]] = {
     def addVersionToLoadbalancers(m: Manifest)(major: MajorVersion): List[Loadbalancer] = {
       m.loadbalancers.map(lb => lb.copy(majorVersion = Some(major)))
     }
@@ -323,7 +330,7 @@ object Manifest {
   /*
    * convert units in the manifest to actions, filtered by f
    */
-  def unitActions(m: Manifest @@ Versioned, dcs: Seq[Datacenter], f: (Datacenter,Namespace,Plan,UnitDef) => Boolean): List[Action] = {
+  def unitActions(m: Versioned[Manifest], dcs: Seq[Datacenter], f: (Datacenter,Namespace,Plan,UnitDef) => Boolean): List[Action] = {
     val mnf = Versioned.unwrap(m)
     val us = units(mnf, dcs)
     val uf = us.filter { case (dc,ns,pl,unit) => f(dc,ns,pl,unit) }
@@ -335,7 +342,7 @@ object Manifest {
   /*
    * convert loadbalancers in the manifest to actions, filtered by f
    */
-  def loadbalancerActions(m: Manifest @@ Versioned, dcs: Seq[Datacenter], f: (Datacenter,Namespace,Plan,Loadbalancer) => Boolean): List[Action] = {
+  def loadbalancerActions(m: Versioned[Manifest], dcs: Seq[Datacenter], f: (Datacenter,Namespace,Plan,Loadbalancer) => Boolean): List[Action] = {
     val mnf = Versioned.unwrap(m)
     val lbs = loadbalancers(mnf, dcs)
     val lf = lbs.filter { case (dc,ns,pl,lb) => f(dc,ns,pl,lb) }
@@ -440,6 +447,6 @@ object Manifest {
         )
     }
 
-  def versionedUnits(m: Manifest @@ Versioned): List[UnitDef @@ Versioned] =
+  def versionedUnits(m: Versioned[Manifest]): List[Versioned[UnitDef]] =
     Versioned.subst(Versioned.unwrap(m).units)
 }

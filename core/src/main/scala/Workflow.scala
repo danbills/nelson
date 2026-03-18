@@ -49,7 +49,7 @@ import scala.concurrent.duration.FiniteDuration
  */
 trait Workflow[O] {
   def name: WorkflowRef
-  def deploy(id: ID, hash: String, unit: UnitDef @@ Versioned, p: Plan, dc: Datacenter, ns: Manifest.Namespace): Workflow.WorkflowF[O]
+  def deploy(id: ID, hash: String, unit: Manifest.Versioned[UnitDef], p: Plan, dc: Datacenter, ns: Manifest.Namespace): Workflow.WorkflowF[O]
   def destroy(d: Deployment, dc: Datacenter, ns: Datacenter.Namespace): Workflow.WorkflowF[O]
 }
 
@@ -93,7 +93,7 @@ object Workflow {
     def pure[A](a: => A): WorkflowF[A] =
       WorkflowControlOp.pure(a).inject
 
-    def launch(i: Image, dc: Datacenter, ns: NamespaceName, u: UnitDef @@ Versioned, p: Plan, hash: String, bp: RenderedBlueprint): WorkflowF[String] =
+    def launch(i: Image, dc: Datacenter, ns: NamespaceName, u: Manifest.Versioned[UnitDef], p: Plan, hash: String, bp: RenderedBlueprint): WorkflowF[String] =
       SchedulerOp.launch(i, dc, ns, u, p, hash, bp).inject
 
     def delete(dc: Datacenter, d: Deployment): WorkflowF[Unit] =

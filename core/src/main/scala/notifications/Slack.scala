@@ -22,9 +22,10 @@ import cats.effect.IO
 import cats.free.Free
 import cats.implicits._
 
+import io.circe.Json
 import org.http4s.Method.POST
 import org.http4s.Request
-import org.http4s.argonaut._
+import org.http4s.circe._
 import org.http4s.client.Client
 
 sealed abstract class SlackOp[A] extends Product with Serializable
@@ -40,18 +41,20 @@ object SlackOp {
 }
 
 final class SlackHttp(cfg: SlackConfig, client: Client[IO]) extends (SlackOp ~> IO) {
-  import argonaut._, Argonaut._
   import SlackOp._
 
   def apply[A](op: SlackOp[A]): IO[A] = op match {
     case SendSlackNotification(channels, msg) =>
-      channels.traverse_(channel => send(channel,msg))
+      channels.traverse_(channel => send(channel, msg))
   }
 
   def send(channel: String, msg: String): IO[Unit] = {
-    val json = Json("channel" := "#"+channel, "text" := msg, "username" := cfg.username)
-    val request = Request[IO](POST, cfg.webhook).withBody(json)
+    val json = Json.obj(
+      "channel"  -> Json.fromString("#" + channel),
+      "text"     -> Json.fromString(msg),
+      "username" -> Json.fromString(cfg.username)
+    )
+    val request = Request[IO](POST, cfg.webhook).withEntity(json)
     client.expect[String](request).map(_ => ())
   }
 }
-

@@ -22,14 +22,12 @@ import cats.data.{EitherT, Kleisli, NonEmptyList, OptionT, ValidatedNel}
 import cats.effect.IO
 import cats.implicits._
 import nelson.CatsHelpers._
-import fs2.async.parallelTraverse
 import java.time.Instant
 import journal.Logger
 import scala.collection.immutable.SortedMap
 
 object Nelson {
   import Datacenter._
-  import scala.concurrent.ExecutionContext
   import scala.concurrent.duration._
   import Json._
   import audit._
@@ -45,12 +43,12 @@ object Nelson {
    *    IO and U as emitted values (e.g. Stream[IO, U], Sink[IO, U])
    */
   type NelsonK[U] = Kleisli[IO, NelsonConfig, U]
-  type NelsonFK[F[_[_], _], U] = Kleisli[F[IO, ?], NelsonConfig, U]
+  type NelsonFK[F[_[_], _], U] = Kleisli[[X] =>> F[IO, X], NelsonConfig, U]
 
   /**
    * a simple lift operation for easy construction of a NelsonFK
    */
-  def lift[F[_[_], _], U](f: NelsonConfig => F[IO, U]) = Kleisli[F[IO, ?], NelsonConfig, U](f)
+  def lift[F[_[_], _], U](f: NelsonConfig => F[IO, U]) = Kleisli[[X] =>> F[IO, X], NelsonConfig, U](f)
 
   private val logger = Logger[this.type]
 
@@ -237,7 +235,7 @@ object Nelson {
    * Reaches out to github and retrieves the manifest for a specific release,
    * validates and then saturates with deployables.
    */
-  def getVersionedManifestForRelease(r: Released): NelsonK[Manifest @@ Versioned] = {
+  def getVersionedManifestForRelease(r: Released): NelsonK[Manifest.Versioned[Manifest]] = {
     for  {
       _   <- config
       g   <- fetchGithubDeployment(r.referenceId, r.slug)
@@ -272,7 +270,7 @@ object Nelson {
 
     // convert units in the manifest to action.
     // filter out all units that are not in the provided namespace (ns)
-    def unitActions(m: Manifest @@ Versioned, ns: NamespaceName, dcs: Seq[Datacenter]): List[Action] = {
+    def unitActions(m: Manifest.Versioned[Manifest], ns: NamespaceName, dcs: Seq[Datacenter]): List[Action] = {
       val unitFilter: (Datacenter,Namespace,Plan,UnitDef) => Boolean =
         (_,namespace,_,_) => namespace.name == ns
 
@@ -298,7 +296,7 @@ object Nelson {
     }
   }
 
-  def storeManifest(m: Manifest @@ Versioned, repoId: ID): NelsonK[Unit] = {
+  def storeManifest(m: Manifest.Versioned[Manifest], repoId: ID): NelsonK[Unit] = {
     Kleisli { cfg =>
       val mnf = Manifest.Versioned.unwrap(m)
       (mnf.units.traverse_(u => StoreOp.addUnit(Versioned(u), repoId)) >>
@@ -454,8 +452,8 @@ object Nelson {
    * List all the datacenters Nelson is currently aware of, and return
    * the namespaces associated with that datacenter.
    */
-  def listDatacenters(implicit ec: ExecutionContext): NelsonK[Map[Datacenter, Set[Namespace]]] = Kleisli { cfg =>
-    parallelTraverse(cfg.datacenters) { d =>
+  def listDatacenters: NelsonK[Map[Datacenter, Set[Namespace]]] = Kleisli { cfg =>
+    cfg.datacenters.parTraverse { d =>
       storage.StoreOp.listNamespacesForDatacenter(d.name).map(d -> _).foldMap(cfg.storage)
     }.map(_.toMap)
   }
@@ -658,7 +656,7 @@ object Nelson {
   /*
    * Commit unit to namespace given a github release event by deploying it into the given datacenters
    */
-  def commit(un: UnitName, ns: NamespaceName, dcs: List[Datacenter], m: Manifest @@ Versioned): NelsonK[Unit] = {
+  def commit(un: UnitName, ns: NamespaceName, dcs: List[Datacenter], m: Manifest.Versioned[Manifest]): NelsonK[Unit] = {
     import Manifest.{Namespace,Plan,UnitDef}
 
     // fiter out everything that doesn't belong to this unit / namespace / datacenter

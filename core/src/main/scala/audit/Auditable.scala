@@ -17,7 +17,8 @@
 package nelson
 package audit
 
-import argonaut.{EncodeJson}
+import io.circe.{Encoder, Json}
+import io.circe.syntax._
 import Datacenter.Deployment
 
 
@@ -73,77 +74,70 @@ final case class AuditContext(action: AuditAction, category: AuditCategory) {
 
 /** Represents an `event` that we wish to audit.
   * Because we are storing the events in a persistent store an encoding is necessary.
-  * Json was choosen because the shape of events varies and because most
+  * Json was chosen because the shape of events varies and because most
   * events already have a json encoder available.
   * The category provides context outside of the json blob concerning the `event`.
-  * the category is usefull from a querying perspective.
+  * the category is useful from a querying perspective.
   */
 trait Auditable[A] {
-  def encode(a: A): argonaut.Json
+  def encode(a: A): io.circe.Json
   def category: AuditCategory
 }
 
 object AuditableInstances {
 
-  import argonaut._, Argonaut._
+  given [A <: NelsonError]: Auditable[A] with {
+    def encode(error: A): Json = nelson.Json.NelsonErrorEncoder[NelsonError].apply(error)
+    def category = ErrorCategory
+  }
 
-  implicit def githubReleaseAudtiable(implicit e: EncodeJson[Github.Release]): Auditable[Github.Release] =
-    new Auditable[Github.Release] {
-      def encode(a: Github.Release) = e.encode(a)
-      def category = GithubReleaseCategory
-    }
+  given Auditable[Github.Release] with {
+    def encode(a: Github.Release): Json = a.asJson(using nelson.Json.GithubReleaseEncoder)
+    def category = GithubReleaseCategory
+  }
 
-  implicit def githubDeploymentAudtiable(implicit e: EncodeJson[Github.Deployment]): Auditable[Github.Deployment] =
-    new Auditable[Github.Deployment] {
-      def encode(a: Github.Deployment) = e.encode(a)
-      def category = GithubDeploymentCategory
-    }
+  given Auditable[Github.Deployment] with {
+    def encode(a: Github.Deployment): Json = a.asJson(using nelson.Json.GithubDeploymentEncoder)
+    def category = GithubDeploymentCategory
+  }
 
-  implicit def githubWebHook(implicit e: EncodeJson[Github.WebHook]): Auditable[Github.WebHook] =
-    new Auditable[Github.WebHook] {
-      def encode(a: Github.WebHook) = e.encode(a)
-      def category = GithubReleaseCategory
-    }
+  given Auditable[Github.WebHook] with {
+    def encode(a: Github.WebHook): Json = a.asJson(using nelson.Json.GithubWebHookEncoder)
+    def category = GithubReleaseCategory
+  }
 
-  implicit def manualDeploymentAuditable(implicit e: EncodeJson[Datacenter.ManualDeployment]): Auditable[Datacenter.ManualDeployment] =
-    new Auditable[Datacenter.ManualDeployment] {
-      def encode(a: Datacenter.ManualDeployment) = e.encode(a)
-      def category = ManualDeploymentCategory
-    }
+  given Auditable[Datacenter.ManualDeployment] with {
+    def encode(a: Datacenter.ManualDeployment): Json = a.asJson(using nelson.Json.ManualDeploymentEncoder)
+    def category = ManualDeploymentCategory
+  }
 
-  implicit def repoAudtiable(implicit e: EncodeJson[Repo]): Auditable[Repo] =
-    new Auditable[Repo] {
-      def encode(a: Repo) = e.encode(a)
-      def category = GithubRepoCategory
-    }
+  given Auditable[Repo] with {
+    def encode(a: Repo): Json = a.asJson(using nelson.Json.RepoEncoder)
+    def category = GithubRepoCategory
+  }
 
-  implicit def hookAudtiable(implicit e: EncodeJson[Hook]): Auditable[Hook] =
-    new Auditable[Hook] {
-      def encode(a: Hook) = e.encode(a)
-      def category = GithubWebHookCategory
-    }
+  given Auditable[Hook] with {
+    def encode(a: Hook): Json = a.asJson(using nelson.Json.HookEncoder)
+    def category = GithubWebHookCategory
+  }
 
-  implicit val stringAuditable: Auditable[String] =
-    new Auditable[String] {
-      def encode(s: String) = jString(s)
-      def category = InfoCategory
-    }
+  given Auditable[String] with {
+    def encode(s: String): Json = Json.fromString(s)
+    def category = InfoCategory
+  }
 
-  implicit val nelsonErrorAuditable: Auditable[NelsonError] =
-    new Auditable[NelsonError] {
-      def encode(error: NelsonError) = nelson.Json.NelsonErrorEncoder.encode(error)
-      def category = ErrorCategory
-    }
+  given Auditable[NelsonError] with {
+    def encode(error: NelsonError): Json = nelson.Json.NelsonErrorEncoder[NelsonError].apply(error)
+    def category = ErrorCategory
+  }
 
-  implicit def sessionAuditable(implicit e: EncodeJson[Session]): Auditable[Session] =
-    new Auditable[Session] {
-      def encode(s: Session) = e.encode(s)
-      def category = InfoCategory
-    }
+  given Auditable[Session] with {
+    def encode(s: Session): Json = s.asJson(using nelson.Json.SessionEncoder)
+    def category = InfoCategory
+  }
 
-  implicit def deploymentAuditable(implicit e: EncodeJson[Deployment]): Auditable[Deployment] =
-    new Auditable[Deployment] {
-      def encode(s: Deployment) = e.encode(s)
-      def category = DeploymentCategory
-    }
+  given Auditable[Deployment] with {
+    def encode(d: Deployment): Json = d.asJson(using nelson.Json.DeploymentEncoder)
+    def category = DeploymentCategory
+  }
 }

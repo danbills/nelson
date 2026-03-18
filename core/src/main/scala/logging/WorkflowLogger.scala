@@ -19,19 +19,20 @@ package logging
 
 import cats.~>
 import cats.effect.IO
+import cats.effect.std.Queue
 import cats.syntax.apply._
 
-import fs2.{Sink, Stream}
-import fs2.async.mutable.Queue
-import fs2.{io, text}
+import fs2.Stream
+import fs2.io.file.{Files, Path => FPath}
+import fs2.text
 
 import journal.Logger
 
-import java.nio.file.{Path,Files,StandardOpenOption}
+import java.nio.file.{Path, Files => JFiles, StandardOpenOption}
 import java.time.Instant
 
 /*
- * The WorkflowLogger is a process that the logs workflow deployment progress
+ * The WorkflowLogger is a process that logs workflow deployment progress
  * information to a namespaced file (based on deployment id). The main
  * purpose of this file is to provide the frontend with insight into
  * what is happening with this deployment, similar to what travis provides.
@@ -48,52 +49,48 @@ class WorkflowLogger(queue: Queue[IO, (ID, String)], base: Path) extends (Loggin
       case Info(msg: String) =>
         IO(logger.info(msg))
       case LogToFile(id, msg) =>
-        log(id,msg)
+        log(id, msg)
     }
 
   def setup(): IO[Unit] =
     IO {
-      if (!exists(base)){
+      if (!exists(base)) {
         logger.info(s"creating workflow log base directory at $base")
-        Files.createDirectories(base)
+        JFiles.createDirectories(base)
         ()
       }
     }
 
   def log(id: ID, line: String): IO[Unit] =
-    queue.enqueue1((id, line))
+    queue.offer((id, line))
 
   def process: Stream[IO, Unit] =
-    queue.dequeue.to(appendToFile)
+    Stream.fromQueueUnterminated(queue).through(appendToFile)
 
-  def read(id: ID, offset: Int): IO[List[String]] = {
+  def read(id: ID, offset: Int): IO[List[String]] =
     for {
       file <- getPath(id)
-      lines <- io.file.readAll[IO](file, 4096) // 4096 is a bit arbitrary..
-                 .through(text.utf8Decode)
+      lines <- Files[IO].readAll(FPath.fromNioPath(file))
+                 .through(text.utf8.decode)
                  .through(text.lines)
                  .drop(offset.toLong)
                  .compile
-                 .toList // yolo
+                 .toList
     } yield lines
-  }
 
-  private def appendToFile: Sink[IO,(ID,String)] =
-    Sink { case (id, line) =>
+  private def appendToFile: fs2.Pipe[IO, (ID, String), Nothing] =
+    _.evalMap { case (id, line) =>
       for {
         path <- getPath(id)
         _    <- createFile(path) *> append(path, line)
       } yield ()
-    }
+    }.drain
 
   private def append(path: Path, line: String): IO[Unit] =
     IO {
       val withNewline = if (!line.endsWith("\n")) s"$line\n" else line
       val withTimestamp = s"$NOW: $withNewline"
-      // This will open and close the file every time a line is added.
-      // Ideally this would be a stream that we could write to and then
-      // close when finished. This is to just get things going.
-      Files.write(path, withTimestamp.getBytes(), StandardOpenOption.APPEND)
+      JFiles.write(path, withTimestamp.getBytes(), StandardOpenOption.APPEND)
       ()
     }
 
@@ -103,12 +100,12 @@ class WorkflowLogger(queue: Queue[IO, (ID, String)], base: Path) extends (Loggin
   private def createFile(path: Path): IO[Unit] =
     IO {
       if (!exists(path))
-        Files.createFile(path)
-        ()
+        JFiles.createFile(path)
+      ()
     }
 
   private def exists(path: Path): Boolean =
-    Files.exists(path)
+    JFiles.exists(path)
 
   private def NOW = Instant.now
 }

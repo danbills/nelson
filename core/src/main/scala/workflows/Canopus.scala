@@ -23,7 +23,7 @@ import nelson.docker.DockerOp
 object Canopus extends Workflow[Unit] {
   val name: WorkflowRef = "canopus"
 
-  def deploy(id: ID, hash: String, vunit: UnitDef @@ Versioned, p: Plan, dc: Datacenter, ns: ManifestNamespace): WorkflowF[Unit] = {
+  def deploy(id: ID, hash: String, vunit: Manifest.Versioned[UnitDef], p: Plan, dc: Datacenter, ns: ManifestNamespace): WorkflowF[Unit] = {
     val unit = Manifest.Versioned.unwrap(vunit)
 
     // When the workflow is completed, we typically want to set the deployment to "Warming", so that once

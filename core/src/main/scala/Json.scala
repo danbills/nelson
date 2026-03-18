@@ -20,266 +20,253 @@ import java.net.URI
 
 import nelson.scheduler._
 
-object Json {
-  import argonaut._, Argonaut._
-  import argonaut.DecodeResultCats._
-  import cats.implicits._
-  import org.http4s.Uri
-  import org.http4s.argonaut._
+import io.circe.{Encoder, Decoder, Json, HCursor, DecodingFailure}
+import io.circe.syntax._
 
+import cats.implicits._
+
+import concurrent.duration._
+
+object Json {
   import Datacenter._
-  import concurrent.duration._
   import health.HealthStatus
 
-  implicit lazy val UriToJson: EncodeJson[URI] =
-    implicitly[EncodeJson[String]].contramap(_.toString)
+  // ── Primitives ────────────────────────────────────────────────────────────
 
-  implicit lazy val JsonToUri: DecodeJson[URI] =
-    implicitly[DecodeJson[String]].map(new URI(_))
+  given Encoder[URI] = Encoder[String].contramap(_.toString)
+  given Decoder[URI] = Decoder[String].map(new URI(_))
 
-  implicit lazy val DurationEncoder: EncodeJson[Duration] =
-    implicitly[EncodeJson[Long]].contramap(_.toMillis)
+  given Encoder[Duration] = Encoder[Long].contramap(_.toMillis)
 
-  implicit lazy val AccessTokenCodec: CodecJson[AccessToken] =
-    casecodec1(AccessToken.apply, AccessToken.unapply)("access_token")
+  given Encoder[java.time.Instant] = Encoder[Long].contramap(_.toEpochMilli)
+  given Decoder[java.time.Instant] = Decoder[Long].map(java.time.Instant.ofEpochMilli)
 
-  implicit lazy val UserCodec: CodecJson[User] =
-    casecodec5(User.apply, User.unapply)("login", "avatar_url", "name", "email", "organizations")
+  // org.http4s.Uri encoder/decoder
+  given Encoder[org.http4s.Uri] = Encoder[String].contramap(_.renderString)
+  given Decoder[org.http4s.Uri] = Decoder[String].emap(s =>
+    org.http4s.Uri.fromString(s).leftMap(_.message)
+  )
 
-  implicit lazy val OrganizationCodec: CodecJson[Organization] =
-    casecodec4(Organization.apply, Organization.unapply)("id", "name", "login", "avatar_url")
+  // ── Core domain ───────────────────────────────────────────────────────────
 
-  implicit lazy val StackNameEncoder: EncodeJson[StackName] =
-    implicitly[EncodeJson[String]].contramap(_.toString)
+  given Encoder[AccessToken] = Encoder.forProduct1("access_token")(_.value)
+  given Decoder[AccessToken] = Decoder.forProduct1("access_token")(AccessToken.apply)
 
-  implicit lazy val DeploymentEncoder: EncodeJson[Deployment] =
-    EncodeJson { (d: Deployment) =>
-      ("stack_name"  := d.stackName) ->:
-      ("deployed_at" := d.deployTime) ->:
-      ("workflow"    := d.workflow) ->:
-      ("guid"        := d.guid) ->:
-      ("unit"        := d.unit.name) ->:
-      ("plan"        := d.plan) ->:
-      ("resources"   := d.unit.resources) ->:
-      jEmptyObject
-    }
+  given Encoder[StackName] = Encoder[String].contramap(_.toString)
 
-  implicit def tagEncoder[A, T](implicit ea: EncodeJson[A]): EncodeJson[A @@ T] = EncodeJson { a => Tag.unwrap[A, T](a).asJson }
-
-  implicit val runningUnitEncoder: EncodeJson[RunningUnit] =
-    EncodeJson((u: RunningUnit) =>
-      ("name" := u.name) ->:
-      ("status" := u.status) ->:
-      jEmptyObject
+  given Encoder[Deployment] = Encoder.instance { d =>
+    Json.obj(
+      "stack_name"  -> d.stackName.asJson,
+      "deployed_at" -> d.deployTime.asJson,
+      "workflow"    -> d.workflow.asJson,
+      "guid"        -> d.guid.asJson,
+      "unit"        -> d.unit.name.asJson,
+      "plan"        -> d.plan.asJson,
+      "resources"   -> d.unit.resources.asJson
     )
+  }
 
-  implicit lazy val RoutingNodeEncoder: EncodeJson[routing.RoutingNode] =
-    EncodeJson((rn: routing.RoutingNode) =>
-      rn.node.fold(
-        lb =>
-          ("guid" := lb.guid) ->:
-          ("stack_name" := lb.stackName.toString) ->:
-          ("type" := "loadbalancer") ->:
-          ("deployed_at" := lb.deployTime) ->:
-          jEmptyObject,
-        de =>
-          ("guid" := de.guid) ->:
-          ("stack_name" := de.stackName.toString) ->:
-          ("type" := "unit") ->:
-          ("deployed_at" := de.deployTime) ->:
-          jEmptyObject
+  given Encoder[RunningUnit] = Encoder.instance { u =>
+    Json.obj(
+      "name"   -> u.name.asJson,
+      "status" -> u.status.asJson
+    )
+  }
+
+  given Encoder[routing.RoutingNode] = Encoder.instance { rn =>
+    rn.node.fold(
+      lb => Json.obj(
+        "guid"        -> lb.guid.asJson,
+        "stack_name"  -> lb.stackName.toString.asJson,
+        "type"        -> "loadbalancer".asJson,
+        "deployed_at" -> lb.deployTime.asJson
+      ),
+      de => Json.obj(
+        "guid"        -> de.guid.asJson,
+        "stack_name"  -> de.stackName.toString.asJson,
+        "type"        -> "unit".asJson,
+        "deployed_at" -> de.deployTime.asJson
       )
     )
+  }
 
-  implicit lazy val RoutePathRoutingNodeEncoder: EncodeJson[(routing.RoutePath, routing.RoutingNode)] =
-    EncodeJson {
-      case (rp: routing.RoutePath, rn: routing.RoutingNode) =>
-        (("weight" := rp.weight) ->:
-         ("port_name" := rp.portName) ->:
-         jEmptyObject
-        ).deepmerge(rn.asJson)
-    }
+  given Encoder[(routing.RoutePath, routing.RoutingNode)] = Encoder.instance {
+    case (rp, rn) =>
+      Json.obj(
+        "weight"    -> rp.weight.asJson,
+        "port_name" -> rp.portName.asJson
+      ).deepMerge(rn.asJson)
+  }
 
-  implicit lazy val DeploymentDeploymentEncoder: EncodeJson[DependencyEdge] =
-    EncodeJson((de: DependencyEdge) =>
-      ("from" := de._1) ->:
-      ("to" := de._2) ->:
-      jEmptyObject
+  given Encoder[DependencyEdge] = Encoder.instance { de =>
+    Json.obj(
+      "from" -> de._1.asJson,
+      "to"   -> de._2.asJson
     )
+  }
 
-  // Used for auditing purposes
-  implicit lazy val ThrowableEncoder: EncodeJson[Throwable] =
-    EncodeJson((t: Throwable) =>
-      ("msg" := t.getMessage) ->:
-      jEmptyObject
+  given Encoder[Throwable] = Encoder.instance { t =>
+    Json.obj("msg" -> t.getMessage.asJson)
+  }
+
+  given [A <: NelsonError]: Encoder[A] = Encoder.instance { e =>
+    Json.obj("msg" -> e.getMessage.asJson)
+  }
+
+  given Encoder[Organization] = Encoder.instance { o =>
+    Json.obj(
+      "id"     -> o.id.asJson,
+      "name"   -> o.name.asJson,
+      "slug"   -> o.slug.asJson,
+      "avatar" -> o.avatar.asJson
     )
+  }
 
-  implicit def NelsonErrorEncoder[A <: NelsonError]: EncodeJson[A] =
-    EncodeJson((error: A) =>
-      ("msg" := error.getMessage) ->:
-      jEmptyObject
+  given Decoder[Organization] = Decoder.instance { c =>
+    for {
+      id     <- c.downField("id").as[Long]
+      name   <- c.downField("name").as[Option[String]]
+      login  <- c.downField("login").as[String]
+      avatar <- c.downField("avatar_url").as[URI]
+    } yield Organization(id, name, login, avatar)
+  }
+
+  given Encoder[Hook] = Encoder.instance { h =>
+    Json.obj(
+      "id"        -> h.id.asJson,
+      "is_active" -> h.isActive.asJson
     )
+  }
 
-  implicit lazy val OrganizationEncoder: EncodeJson[Organization] =
-    EncodeJson((o: Organization) =>
-      ("id" := o.id) ->:
-      ("name" := o.name) ->:
-      ("slug" := o.slug) ->:
-      ("avatar" := o.avatar) ->:
-      jEmptyObject
+  given Decoder[RepoAccess] = Decoder.instance { c =>
+    for {
+      push  <- c.downField("push").as[Boolean]
+      pull  <- c.downField("pull").as[Boolean]
+      admin <- c.downField("admin").as[Boolean]
+    } yield RepoAccess.fromBools(admin, push, pull)
+  }
+
+  given Decoder[Repo] = Decoder.instance { c =>
+    for {
+      id       <- c.downField("id").as[Long]
+      fullName <- c.downField("full_name").as[String]
+      slug     <- Slug.fromString(fullName).left.map(e => DecodingFailure(e.getMessage, c.history))
+      access   <- c.downField("permissions").as[RepoAccess]
+    } yield Repo(id, slug, access)
+  }
+
+  given Encoder[Repo] = Encoder.instance { r =>
+    Json.obj(
+      "id"         -> r.id.asJson,
+      "slug"       -> r.slug.toString.asJson,
+      "owner"      -> r.slug.owner.asJson,
+      "repository" -> r.slug.repository.asJson,
+      "access"     -> r.access.toString.asJson,
+      "hook"       -> r.hook.asJson
     )
+  }
 
-  implicit lazy val OrganizationDecoder: DecodeJson[Organization] =
-    DecodeJson(c =>
-      ((c --\ "id").as[Long],
-        (c --\ "name").as[Option[String]],
-        (c --\ "login").as[String],
-        (c --\ "avatar_url").as[URI]
-      ).mapN(Organization.apply)
+  // never encode the whole session — only a non-private subset
+  given Encoder[Session] = Encoder.instance { s =>
+    Json.obj(
+      "user" -> Json.obj(
+        "name"          -> s.user.name.asJson,
+        "login"         -> s.user.login.asJson,
+        "avatar"        -> s.user.avatar.toString.asJson,
+        "organizations" -> (s.user.toOrganization +: s.user.orgs).asJson
+      )
     )
+  }
 
-  implicit lazy val HookEncoder: EncodeJson[Hook] =
-    EncodeJson((h: Hook) =>
-      ("id" := h.id) ->:
-      ("is_active" := h.isActive) ->:
-      jEmptyObject)
+  // ── User ─────────────────────────────────────────────────────────────────
 
-  implicit lazy val RepoAccessDecoder: DecodeJson[RepoAccess] =
-    DecodeJson(c =>
-      ((c --\ "push").as[Boolean],
-        (c --\ "pull").as[Boolean],
-        (c --\ "admin").as[Boolean]
-      ).mapN(RepoAccess.fromBools)
+  given Encoder[User] = Encoder.forProduct5("login", "avatar_url", "name", "email", "organizations")(
+    u => (u.login, u.avatar, u.name, u.email, u.orgs)
+  )
+
+  given Decoder[User] = Decoder.forProduct5("login", "avatar_url", "name", "email", "organizations")(
+    User.apply
+  )
+
+  // ── Github types ─────────────────────────────────────────────────────────
+
+  given Decoder[Github.WebHook] = Decoder.instance { c =>
+    for {
+      id     <- c.downField("id").as[Long]
+      name   <- c.downField("name").as[String]
+      events <- c.downField("events").as[List[String]]
+      active <- c.downField("active").as[Boolean]
+      config <- c.downField("config").as[Map[String, String]]
+    } yield Github.WebHook(id, name, events, active, config)
+  }
+
+  given Encoder[Github.WebHook] = Encoder.instance { w =>
+    Json.obj(
+      "name"   -> w.name.asJson,
+      "events" -> w.events.asJson,
+      "active" -> w.active.asJson,
+      "config" -> w.config.asJson
     )
+  }
 
-  implicit lazy val RepoDecoder: DecodeJson[Repo] =
-    DecodeJson(c => for {
-      z <- (c --\ "id").as[Long]
-      y <- (c --\ "full_name").as[String]
-      x <- Slug.fromString(y).map(DecodeResult.ok
-            ).valueOr(e => DecodeResult.fail(e.getMessage,c.history))
-      w <- (c --\ "permissions").as[RepoAccess]
-    } yield Repo(z,x,w))
+  given Decoder[Github.PingEvent] = Decoder.instance { c =>
+    c.downField("zen").as[String].map(Github.PingEvent.apply)
+  }
 
-  implicit lazy val RepoEncoder: EncodeJson[Repo] =
-    EncodeJson((r: Repo) =>
-      ("id"         := r.id) ->:
-      ("slug"       := r.slug.toString) ->:
-      ("owner"      := r.slug.owner) ->:
-      ("repository" := r.slug.repository) ->:
-      ("access"     := r.access.toString) ->:
-      ("hook"       := r.hook) ->:
-      jEmptyObject)
+  given Decoder[Github.Contents] = Decoder.instance { c =>
+    for {
+      content <- c.downField("content").as[String]
+      name    <- c.downField("name").as[String]
+      size    <- c.downField("size").as[Long]
+    } yield Github.Contents(content, name, size)
+  }
 
-  // never encode the whole session - only a non-private subset
-  implicit lazy val SessionEncoder: EncodeJson[Session] =
-    EncodeJson((s: Session) =>
-      ("user" :=
-        ("name" := s.user.name) ->:
-        ("login" := s.user.login) ->:
-        ("avatar" := s.user.avatar.toString) ->:
-        ("organizations" := (s.user.toOrganization +: s.user.orgs)) ->:
-        jEmptyObject
-      ) ->:
-      jEmptyObject
+  given Decoder[Github.Asset] = Decoder.instance { c =>
+    for {
+      id   <- c.downField("id").as[Long]
+      name <- c.downField("name").as[String]
+      url  <- c.downField("url").as[org.http4s.Uri]
+    } yield Github.Asset(id, name, url)
+  }
+
+  given Encoder[Github.Asset] = Encoder.instance { asset =>
+    Json.obj(
+      "id"      -> asset.id.asJson,
+      "name"    -> asset.name.asJson,
+      "url"     -> asset.url.renderString.asJson,
+      "content" -> asset.content.asJson
     )
+  }
 
-  /**
-   *{
-   *  "id": 1,
-   *  "url": "https://api.github.com/repos/octocat/Hello-World/hooks/1",
-   *  "test_url": "https://api.github.com/repos/octocat/Hello-World/hooks/1/test",
-   *  "ping_url": "https://api.github.com/repos/octocat/Hello-World/hooks/1/pings",
-   *  "name": "web",
-   *  "events": [
-   *    "push",
-   *    "pull_request"
-   *  ],
-   *  "active": true,
-   *  "config": {
-   *    "url": "http://example.com/webhook",
-   *    "content_type": "json"
-   *  },
-   *  "updated_at": "2011-09-06T20:39:23Z",
-   *  "created_at": "2011-09-06T17:26:27Z"
-   *}
-   */
-  implicit lazy val GithubWebHookDecoder: DecodeJson[Github.WebHook] =
-    DecodeJson(c =>
-      ((c --\ "id").as[Long],
-        (c --\ "name").as[String],
-        (c --\ "events").as[List[String]],
-        (c --\ "active").as[Boolean],
-        (c --\ "config").as[Map[String,String]]
-      ).mapN(Github.WebHook.apply)
+  given Decoder[Github.Release] = Decoder.instance { c =>
+    for {
+      id      <- c.downField("id").as[Long]
+      url     <- c.downField("url").as[String]
+      htmlUrl <- c.downField("html_url").as[String]
+      assets  <- c.downField("assets").as[List[Github.Asset]]
+      tagName <- c.downField("tag_name").as[String]
+    } yield Github.Release(id, url, htmlUrl, assets, tagName)
+  }
+
+  given Encoder[Github.Release] = Encoder.instance { r =>
+    Json.obj(
+      "id"       -> r.id.asJson,
+      "url"      -> r.url.asJson,
+      "html_url" -> r.htmlUrl.asJson,
+      "assets"   -> r.assets.asJson,
+      "tag_name" -> r.tagName.asJson
     )
+  }
 
-  /**
-   * Supplied by Github to ensure that your webhook is active
-   */
-  implicit lazy val GithubPingEventDecoder: DecodeJson[Github.PingEvent] =
-    DecodeJson(c => for {
-      z <- (c --\ "zen").as[String]
-    } yield Github.PingEvent(z))
-
-  /**
-   * a simple aggregate decoder that allows us to refer to all events
-   * as a single inbound type; bit hacky but we're bridging the typed
-   * and un-typed worlds here... *sigh*.
-   *
-   * TIM: this seems really hacky.
-   */
-  implicit lazy val GithubEventDecoder: DecodeJson[Github.Event] =
-    ((GithubDeploymentEventInboundDecoder |||
-     GithubReleaseEventDecoder: DecodeJson[Github.Event]) |||
-     GithubPullRequestEventDecoder: DecodeJson[Github.Event]) |||
-     GithubPingEventDecoder
-
-  /*
-   * {
-   *   "deployment": {
-   *     "url": "https://api.github.com/repos/timperrett/example/deployments/107241174",
-   *     "id": 107241174,
-   *     "node_id": "MDEwOkRlcGxveW1lbnQxMDcyNDExNzQ=",
-   *     "sha": "fdb7da2ab3b2cd172e86c1af9adefa3523f6d65b",
-   *     "ref": "fdb7da2ab3b2cd172e86c1af9adefa3523f6d65b",
-   *     "task": "deploy",
-   *     "payload": "{ \"foo\": true }",
-   *     "original_environment": "production",
-   *     "environment": "production",
-   *     "description": null,
-   *     "creator": {
-   *      ....
-   *     },
-   *     "created_at": "2018-10-06T04:52:40Z",
-   *     "updated_at": "2018-10-06T04:52:40Z",
-   *     "statuses_url": "https://api.github.com/repos/timperrett/example/deployments/107241174/statuses",
-   *     "repository_url": "https://api.github.com/repos/timperrett/example"
-   *   },
-   *   "repository": {
-   *     "id": 140525376,
-   *     "node_id": "MDEwOlJlcG9zaXRvcnkxNDA1MjUzNzY=",
-   *     "name": "example",
-   *     "full_name": "timperrett/example",
-   *     ....
-   *   },
-   *   "sender": {
-   *    ....
-   *   }
-   * }
-  */
-  implicit val GithubDeploymentEventDecoder: DecodeJson[Github.Deployment] =
-    DecodeJson(z => for {
-      a <- (z --\ "id").as[Long]
-      c <- (z --\ "ref").as[String]
-      s <- (z --\ "sha").as[String]
-      d <- (z --\ "environment").as[String]
-      e <- (z --\ "payload").as[String]
-      g <- (z --\ "url").as[String]
+  given Decoder[Github.Deployment] = Decoder.instance { z =>
+    for {
+      a <- z.downField("id").as[Long]
+      c <- z.downField("ref").as[String]
+      s <- z.downField("sha").as[String]
+      d <- z.downField("environment").as[String]
+      e <- z.downField("payload").as[String]
+      g <- z.downField("url").as[String]
     } yield {
-      // NOTE(timperrett): this seems a little sketchy as we're invoking the
-      // protobuf decoder right here in the JSON decoder, even thought we've
-      // no idea if things might work here or not... we can do better.
       val bytes = java.util.Base64.getDecoder.decode(e)
       val unmarshalled = nelson.api.deployable.Deployables.parseFrom(bytes)
       val converted = unmarshalled.deployables.toList.map { a =>
@@ -292,432 +279,194 @@ object Json {
       }
       Github.Deployment(
         id = a,
-        ref = Github.Reference.fromString(c,Option(s)),
+        ref = Github.Reference.fromString(c, Option(s)),
         environment = d,
         deployables = converted,
         url = g
       )
-    })
-
-  // TODO(timperrett): what do we do here about encoding the assets that
-  // are shipped to us as proto format?
-  implicit val GithubDeploymentEncoder: EncodeJson[Github.Deployment] =
-    EncodeJson((d: Github.Deployment) =>
-      ("id" := d.id) ->:
-      ("url" := d.url) ->:
-      ("ref" := d.ref.toString) ->:
-      jEmptyObject
-    )
-
-  implicit val GithubDeploymentEventInboundDecoder: DecodeJson[Github.DeploymentEvent] =
-    DecodeJson(z => (for {
-      a <- (z --\ "deployment").as[Github.Deployment]
-      x <- (z --\ "repository" --\ "full_name").as[String]
-      b <- Slug.fromString(x).map(DecodeResult.ok
-           ).valueOr(e => DecodeResult.fail(e.getMessage,z.history))
-      f <- (z --\ "repository" --\ "id").as[Long]
-    } yield Github.DeploymentEvent(slug = b, repositoryId = f, deployment = a) ))
-
-  /**
-   * {
-   *   "name": "web",
-   *   "active": true,
-   *   "events": [
-   *     "push",
-   *     "pull_request"
-   *   ],
-   *   "config": {
-   *     "url": "http://example.com/webhook",
-   *     "content_type": "json"
-   *   }
-   * }
-   */
-  implicit lazy val GithubWebHookEncoder: EncodeJson[Github.WebHook] =
-    EncodeJson((w: Github.WebHook) =>
-      ("name"   := w.name) ->:
-      ("events" := w.events) ->:
-      ("active" := w.active) ->:
-      ("config" := w.config) ->:
-      jEmptyObject
-    )
-
-  /**
-   * {
-   *   "content": "...",
-   *   "name": ".travis.yml",
-   *   "size": 633
-   * }
-   */
-  implicit val GithubContentsDecoder: DecodeJson[Github.Contents] =
-    DecodeJson(c =>
-      ((c --\ "content").as[String],
-        (c --\ "name").as[String],
-        (c --\ "size").as[Long]
-      ).mapN(Github.Contents.apply)
-    )
-
-  /**
-   * {
-   *   "assets": [
-   *     {
-   *       "browser_download_url": "https://github.example.com/tim/howdy/releases/download/0.13.17/example-howdy.deployable.yml",
-   *       "content_type": "application/yaml; charset=UTF-8",
-   *       "created_at": "2016-02-11T21:31:47Z",
-   *       "download_count": 1,
-   *       "id": 119,
-   *       "label": "",
-   *       "name": "example-howdy.deployable.yml",
-   *       "size": 206,
-   *       "state": "uploaded",
-   *       "updated_at": "2016-02-11T21:31:48Z",
-   *       "uploader": {
-   *         "avatar_url": "https://github.example.com/avatars/u/703?",
-   *         "events_url": "https://github.example.com/api/v3/users/travis/events{/privacy}",
-   *         "followers_url": "https://github.example.com/api/v3/users/travis/followers",
-   *         "following_url": "https://github.example.com/api/v3/users/travis/following{/other_user}",
-   *         "gists_url": "https://github.example.com/api/v3/users/travis/gists{/gist_id}",
-   *         "gravatar_id": "",
-   *         "html_url": "https://github.example.com/travis",
-   *         "id": 703,
-   *         "login": "travis",
-   *         "organizations_url": "https://github.example.com/api/v3/users/travis/orgs",
-   *         "received_events_url": "https://github.example.com/api/v3/users/travis/received_events",
-   *         "repos_url": "https://github.example.com/api/v3/users/travis/repos",
-   *         "site_admin": false,
-   *         "starred_url": "https://github.example.com/api/v3/users/travis/starred{/owner}{/repo}",
-   *         "subscriptions_url": "https://github.example.com/api/v3/users/travis/subscriptions",
-   *         "type": "User",
-   *         "url": "https://github.example.com/api/v3/users/travis"
-   *       },
-   *       "url": "https://github.example.com/api/v3/repos/tim/howdy/releases/assets/119"
-   *     }
-   *   ],
-   *   "assets_url": "https://github.example.com/api/v3/repos/tim/howdy/releases/250/assets",
-   *   "author": {
-   *     "avatar_url": "https://github.example.com/avatars/u/703?",
-   *     "events_url": "https://github.example.com/api/v3/users/travis/events{/privacy}",
-   *     "followers_url": "https://github.example.com/api/v3/users/travis/followers",
-   *     "following_url": "https://github.example.com/api/v3/users/travis/following{/other_user}",
-   *     "gists_url": "https://github.example.com/api/v3/users/travis/gists{/gist_id}",
-   *     "gravatar_id": "",
-   *     "html_url": "https://github.example.com/travis",
-   *     "id": 703,
-   *     "login": "travis",
-   *     "organizations_url": "https://github.example.com/api/v3/users/travis/orgs",
-   *     "received_events_url": "https://github.example.com/api/v3/users/travis/received_events",
-   *     "repos_url": "https://github.example.com/api/v3/users/travis/repos",
-   *     "site_admin": false,
-   *     "starred_url": "https://github.example.com/api/v3/users/travis/starred{/owner}{/repo}",
-   *     "subscriptions_url": "https://github.example.com/api/v3/users/travis/subscriptions",
-   *     "type": "User",
-   *     "url": "https://github.example.com/api/v3/users/travis"
-   *   },
-   *   "body": "",
-   *   "created_at": "2016-02-11T21:30:05Z",
-   *   "draft": false,
-   *   "html_url": "https://github.example.com/tim/howdy/releases/tag/0.13.17",
-   *   "id": 250,
-   *   "name": "Inner Elemental",
-   *   "prerelease": false,
-   *   "published_at": "2016-02-11T21:31:47Z",
-   *   "tag_name": "0.13.17",
-   *   "tarball_url": "https://github.example.com/api/v3/repos/tim/howdy/tarball/0.13.17",
-   *   "target_commitish": "master",
-   *   "upload_url": "https://github.example.com/api/uploads/repos/tim/howdy/releases/250/assets{?name,label}",
-   *   "url": "https://github.example.com/api/v3/repos/tim/howdy/releases/250",
-   *   "zipball_url": "https://github.example.com/api/v3/repos/tim/howdy/zipball/0.13.17"
-   * }
-   */
-  implicit val GithubReleaseDecoder: DecodeJson[Github.Release] =
-    DecodeJson(z =>
-      ((z --\ "id").as[Long],
-        (z --\ "url").as[String],
-        (z --\ "html_url").as[String],
-        (z --\ "assets").as[List[Github.Asset]],
-        (z --\ "tag_name").as[String]
-        ).mapN ((a, b, c, d, e) =>
-        Github.Release(
-          id = a,
-          url = b,
-          htmlUrl = c,
-          assets = d,
-          tagName = e
-        )
-      )
-    )
-
-  implicit val GithubReleaseEncoder: EncodeJson[Github.Release] =
-    EncodeJson((release: Github.Release) =>
-      ("id" := release.id) ->:
-      ("url" := release.url) ->:
-      ("html_url" := release.htmlUrl) ->:
-      ("assets" := release.assets) ->:
-      ("tag_name" := release.tagName) ->:
-      jEmptyObject
-    )
-
-  implicit val GithubAssetsEncoder: EncodeJson[Github.Asset] =
-    EncodeJson((asset: Github.Asset) =>
-      ("id" := asset.id) ->:
-      ("name" := asset.name) ->:
-      ("url" := asset.url.toString) ->:
-      ("content" := asset.content) ->:
-      jEmptyObject
-    )
-
-  /**
-   *{
-   *  "action": "published",
-   *  "release": {
-   *    "url": "https://api.github.com/repos/baxterthehacker/public-repo/releases/1261438",
-   *    "assets_url": "https://api.github.com/repos/baxterthehacker/public-repo/releases/1261438/assets",
-   *    "upload_url": "https://uploads.github.com/repos/baxterthehacker/public-repo/releases/1261438/assets{?name}",
-   *    "html_url": "https://github.com/baxterthehacker/public-repo/releases/tag/0.0.1",
-   *    "id": 1261438,
-   *    "tag_name": "0.0.1",
-   *    "target_commitish": "master",
-   *    "name": null,
-   *    "draft": false,
-   *    "author": {
-   *      "login": "baxterthehacker",
-   *      "id": 6752317,
-   *      "avatar_url": "https://avatars.githubusercontent.com/u/6752317?v=3",
-   *      "gravatar_id": "",
-   *      "url": "https://api.github.com/users/baxterthehacker",
-   *      "html_url": "https://github.com/baxterthehacker",
-   *      ...
-   *      "type": "User",
-   *      "site_admin": false
-   *    },
-   *    "prerelease": false,
-   *    "created_at": "2015-05-05T23:40:12Z",
-   *    "published_at": "2015-05-05T23:40:38Z",
-   *    "assets": [
-   *
-   *    ],
-   *    "tarball_url": "https://api.github.com/repos/baxterthehacker/public-repo/tarball/0.0.1",
-   *    "zipball_url": "https://api.github.com/repos/baxterthehacker/public-repo/zipball/0.0.1",
-   *    "body": null
-   *  },
-   *  "repository": {
-   *    "id": 35129377,
-   *    "name": "public-repo",
-   *    "full_name": "baxterthehacker/public-repo",
-   *    "owner": {
-   *      "login": "baxterthehacker",
-   *      "id": 6752317,
-   *      "avatar_url": "https://avatars.githubusercontent.com/u/6752317?v=3",
-   *      "gravatar_id": "",
-   *      "url": "https://api.github.com/users/baxterthehacker",
-   *      "html_url": "https://github.com/baxterthehacker",
-   *      ...
-   *      "type": "User",
-   *      "site_admin": false
-   *    },
-   *    "private": false,
-   *    "html_url": "https://github.com/baxterthehacker/public-repo",
-   *    "description": "",
-   *    "fork": false,
-   *    ...
-   *    "created_at": "2015-05-05T23:40:12Z",
-   *    "updated_at": "2015-05-05T23:40:30Z",
-   *    "pushed_at": "2015-05-05T23:40:38Z",
-   *    "git_url": "git://github.com/baxterthehacker/public-repo.git",
-   *    "ssh_url": "git@github.com:baxterthehacker/public-repo.git",
-   *    "clone_url": "https://github.com/baxterthehacker/public-repo.git",
-   *    "svn_url": "https://github.com/baxterthehacker/public-repo",
-   *    "homepage": null,
-   *    "size": 0,
-   *    "stargazers_count": 0,
-   *    "watchers_count": 0,
-   *    "language": null,
-   *    "has_issues": true,
-   *    "has_downloads": true,
-   *    "has_wiki": true,
-   *    "has_pages": true,
-   *    "forks_count": 0,
-   *    "mirror_url": null,
-   *    "open_issues_count": 2,
-   *    "forks": 0,
-   *    "open_issues": 2,
-   *    "watchers": 0,
-   *    "default_branch": "master"
-   *  },
-   *  "sender": {
-   *    "login": "baxterthehacker",
-   *    "id": 6752317,
-   *    "avatar_url": "https://avatars.githubusercontent.com/u/6752317?v=3",
-   *    "gravatar_id": "",
-   *    "url": "https://api.github.com/users/baxterthehacker",
-   *    "html_url": "https://github.com/baxterthehacker",
-   *    ...
-   *    "type": "User",
-   *    "site_admin": false
-   *  }
-   *}
-   */
-  implicit val GithubReleaseEventDecoder: DecodeJson[Github.ReleaseEvent] =
-    DecodeJson(z => for {
-      a <- (z --\ "release" --\ "id").as[Long]
-      d <- (z --\ "repository" --\ "full_name").as[String]
-      x <- Slug.fromString(d).map(DecodeResult.ok
-           ).valueOr(e => DecodeResult.fail(e.getMessage,z.history))
-      e <- (z --\ "repository" --\ "id").as[Long]
-    } yield {
-      Github.ReleaseEvent(
-        id = a,
-        slug = x,
-        repositoryId = e
-      )
-    })
-
-  /**
-   * {
-   *   "url": "https://github.example.com/api/v3/repos/example/howdy/releases/assets/1",
-   *   "id": 1,
-   *   "name": "example.yml",
-   *   "label": "",
-   *   "uploader": {
-   *     ...
-   *   },
-   *   "content_type": "application/yaml",
-   *   "state": "uploaded",
-   *   "size": 36,
-   *   "download_count": 0,
-   *   "created_at": "2015-12-18T00:27:46Z",
-   *   "updated_at": "2015-12-18T00:27:46Z",
-   *   "browser_download_url": "https://github.example.com/example/howdy/releases/download/3.0.0/example.yml"
-   * }
-   */
-  implicit lazy val AssetDecoder: DecodeJson[Github.Asset] =
-    DecodeJson(c =>
-      ((c --\ "id").as[Long],
-        (c --\ "name").as[String],
-        (c --\ "url").as[Uri]
-      ).mapN((x,y,z) => Github.Asset(x,y,z))
-    )
-
-  implicit val GithubPullRequestEventDecoder: DecodeJson[Github.PullRequestEvent] =
-    DecodeJson(z => for {
-      a <- (z --\ "number").as[Long]
-      b <- (z --\ "pull_request" --\ "url").as[String]
-      d <- (z --\ "repository" --\ "full_name").as[String]
-      x <- Slug.fromString(d).map(DecodeResult.ok
-           ).valueOr(e => DecodeResult.fail(e.getMessage,z.history))
-    } yield {
-      Github.PullRequestEvent(
-        id = a,
-        url = b,
-        slug = x
-      )
-    })
-
-  implicit lazy val GithubOrg: CodecJson[Github.OrgKey] =
-    casecodec2(Github.OrgKey.apply, Github.OrgKey.unapply)("id", "login")
-
-  implicit lazy val GithubUser: CodecJson[Github.User] =
-    casecodec4(Github.User.apply, Github.User.unapply
-      )("login", "avatar_url", "name", "email")
-
-  implicit val timestampCodec: CodecJson[java.time.Instant] = CodecJson(
-    (i: java.time.Instant) => i.toEpochMilli.asJson,
-    c => for {
-      instant <- (c --\ "timestamp").as[Long]
-    } yield java.time.Instant.ofEpochMilli(instant)
-  )
-
-  implicit val auditLogEncoder: CodecJson[audit.AuditLog] =
-    casecodec7(audit.AuditLog.apply, audit.AuditLog.unapply)("id", "timestamp", "releaseId", "event", "category", "action", "login")
-
-  implicit val manualDeployEncoder: CodecJson[Datacenter.ManualDeployment] =
-    casecodec7(Datacenter.ManualDeployment.apply, Datacenter.ManualDeployment.unapply)(
-      "datacenter", "namespace", "service_type", "version", "hash", "description", "port"
-    )
-
-  implicit val NamspaceRoutingGraphEncoder: EncodeJson[(Namespace,routing.RoutingGraph)] =
-    EncodeJson { (t: (Namespace, routing.RoutingGraph)) =>
-      val (n,g) = t
-      ("name" := n.name.asString) ->:
-      ("graph" := g.nodes.map(node =>
-        ("name" := node.stackName.toString) ->:
-        ("dependencies" := g.outs(node).map(_._2.stackName.toString)) ->:
-        jEmptyObject)
-      ) ->: jEmptyObject
     }
+  }
 
-  implicit lazy val DeploymentSummaryEncoder: EncodeJson[scheduler.DeploymentSummary] =
-    EncodeJson((ds: scheduler.DeploymentSummary) =>
-      ("running"   := ds.running) ->:
-      ("pending"   := ds.pending) ->:
-      ("completed" := ds.completed) ->:
-      ("failed"    := ds.failed) ->:
-      jEmptyObject
+  given Encoder[Github.Deployment] = Encoder.instance { d =>
+    Json.obj(
+      "id"  -> d.id.asJson,
+      "url" -> d.url.asJson,
+      "ref" -> d.ref.toString.asJson
     )
+  }
 
-  implicit val HealthCheckEncoder: EncodeJson[health.HealthCheck] =
-    EncodeJson[health.HealthCheck] { hs => jString(health.HealthCheck.toString(hs)) }
+  given Decoder[Github.DeploymentEvent] = Decoder.instance { z =>
+    for {
+      deployment <- z.downField("deployment").as[Github.Deployment]
+      fullName   <- z.downField("repository").downField("full_name").as[String]
+      slug       <- Slug.fromString(fullName).left.map(e => DecodingFailure(e.getMessage, z.history))
+      repoId     <- z.downField("repository").downField("id").as[Long]
+    } yield Github.DeploymentEvent(slug = slug, repositoryId = repoId, deployment = deployment)
+  }
 
-  implicit lazy val HealthStatusEncoder: EncodeJson[HealthStatus] =
-    EncodeJson((h: HealthStatus) =>
-      ("name"    := h.details.getOrElse("unspecified")) ->:
-      ("status"  := h.status) ->:
-      ("node"    := h.node) ->:
-      ("check_id" := h.id) ->:
-      jEmptyObject
-    )
+  given Decoder[Github.ReleaseEvent] = Decoder.instance { z =>
+    for {
+      id       <- z.downField("release").downField("id").as[Long]
+      fullName <- z.downField("repository").downField("full_name").as[String]
+      slug     <- Slug.fromString(fullName).left.map(e => DecodingFailure(e.getMessage, z.history))
+      repoId   <- z.downField("repository").downField("id").as[Long]
+    } yield Github.ReleaseEvent(id = id, slug = slug, repositoryId = repoId)
+  }
 
-  implicit lazy val RuntimeSummaryEncoder: EncodeJson[Nelson.RuntimeSummary] =
-    EncodeJson((rs: Nelson.RuntimeSummary) =>
-      ("scheduler" := rs.deployment) ->:
-      ("consul_health" := rs.health) ->:
-      ("current_status" := rs.currentStatus.toString) ->:
-      ("expires_at" := rs.expiresAt) ->:
-      jEmptyObject
-    )
+  given Decoder[Github.PullRequestEvent] = Decoder.instance { z =>
+    for {
+      id       <- z.downField("number").as[Long]
+      url      <- z.downField("pull_request").downField("url").as[String]
+      fullName <- z.downField("repository").downField("full_name").as[String]
+      slug     <- Slug.fromString(fullName).left.map(e => DecodingFailure(e.getMessage, z.history))
+    } yield Github.PullRequestEvent(id = id, url = url, slug = slug)
+  }
 
-  implicit val NamespaceNameDecoder: DecodeJson[NamespaceName] =
-    DecodeJson.optionDecoder(_.string.flatMap(s =>
-      NamespaceName.fromString(s).toOption), "NamespaceName")
+  given Decoder[Github.Event] = List[Decoder[Github.Event]](
+    Decoder[Github.DeploymentEvent].widen,
+    Decoder[Github.ReleaseEvent].widen,
+    Decoder[Github.PullRequestEvent].widen,
+    Decoder[Github.PingEvent].widen
+  ).reduceLeft(_ or _)
 
-  final case class NamespaceNameJson(
-    namespace: NamespaceName
+  given Encoder[Github.OrgKey] = Encoder.forProduct2("id", "login")(o => (o.id, o.slug))
+  given Decoder[Github.OrgKey] = Decoder.forProduct2("id", "login")(Github.OrgKey.apply)
+
+  given Encoder[Github.User] = Encoder.forProduct4("login", "avatar_url", "name", "email")(
+    u => (u.login, u.avatar, u.name, u.email)
+  )
+  given Decoder[Github.User] = Decoder.forProduct4("login", "avatar_url", "name", "email")(
+    Github.User.apply
   )
 
-  implicit val NamespaceNameJsonDecoder: DecodeJson[NamespaceNameJson] =
-    DecodeJson[NamespaceNameJson](c =>
-      for {
-        ns <- (c --\ "namespace").as[NamespaceName]
-      } yield NamespaceNameJson(ns)
+  // ── Audit ─────────────────────────────────────────────────────────────────
+
+  given Encoder[audit.AuditLog] = Encoder.instance { a =>
+    Json.obj(
+      "id"         -> a.id.asJson,
+      "timestamp"  -> a.timestamp.asJson,
+      "releaseId"  -> a.releaseId.asJson,
+      "event"      -> a.event.getOrElse(Json.Null),
+      "category"   -> a.category.asJson,
+      "action"     -> a.action.asJson,
+      "login"      -> a.login.asJson
     )
-
-  implicit lazy val CommitUnitDecode: DecodeJson[Nelson.CommitUnit] =
-    DecodeJson(c => for {
-      u <- (c --\ "unit").as[String]
-      v <- (c --\ "version").as[String]
-      t <- (c --\ "target").as[NamespaceName]
-      vv <- Version.fromString(v).map(DecodeResult.ok)
-              .getOrElse(DecodeResult.fail(s"unable to parse $v into a version", c.history))
-    } yield Nelson.CommitUnit(u,vv,t))
-
-  implicit lazy val TrafficShiftEncoder: EncodeJson[Datacenter.TrafficShift] =
-    EncodeJson((ts: Datacenter.TrafficShift) =>
-      ("from" := ts.from) ->:
-      ("to" := ts.to) ->:
-      ("start" := ts.start) ->:
-      ("end" := ts.end) ->:
-      ("reverse" := ts.reverse) ->:
-      ("policy" := ts.policy.ref) ->:
-      jEmptyObject
-    )
-
-  /*
-   * Encode a map as a transposed JSON list of maps, such that each map has (klabel: key) and (vlabel: value) entries.
-   */
-  def encodeTransposeMap[K, V](klabel: Symbol, vlabel: Symbol)(implicit ek: EncodeJson[K], ev: EncodeJson[V]): EncodeJson[Map[K, V]] = EncodeJson { m =>
-    m.toList.map { case (k, v) =>
-      (vlabel.name := v.asJson) ->:
-      (klabel.name := k.asJson) ->:
-      jEmptyObject
-    }.asJson
   }
+
+  given Decoder[audit.AuditLog] = Decoder.instance { c =>
+    for {
+      id        <- c.downField("id").as[ID]
+      timestamp <- c.downField("timestamp").as[java.time.Instant]
+      releaseId <- c.downField("releaseId").as[Option[Long]]
+      event     <- c.downField("event").as[Option[Json]]
+      category  <- c.downField("category").as[String]
+      action    <- c.downField("action").as[String]
+      login     <- c.downField("login").as[Option[String]]
+    } yield audit.AuditLog(id, timestamp, releaseId, event, category, action, login)
+  }
+
+  // ── Manual deployment ────────────────────────────────────────────────────
+
+  given Encoder[Datacenter.ManualDeployment] = Encoder.forProduct7(
+    "datacenter", "namespace", "service_type", "version", "hash", "description", "port"
+  )(d => (d.datacenter, d.namespace, d.serviceType, d.version, d.hash, d.description, d.port))
+
+  given Decoder[Datacenter.ManualDeployment] = Decoder.forProduct7(
+    "datacenter", "namespace", "service_type", "version", "hash", "description", "port"
+  )(Datacenter.ManualDeployment.apply)
+
+  // ── Routing graph ────────────────────────────────────────────────────────
+
+  given Encoder[(Namespace, routing.RoutingGraph)] = Encoder.instance { case (n, g) =>
+    Json.obj(
+      "name" -> n.name.asString.asJson,
+      "graph" -> g.nodes.toList.map { node =>
+        Json.obj(
+          "name"         -> node.stackName.toString.asJson,
+          "dependencies" -> g.outs(node).map(_.to.stackName.toString).asJson
+        )
+      }.asJson
+    )
+  }
+
+  // ── Scheduler ────────────────────────────────────────────────────────────
+
+  given Encoder[scheduler.DeploymentSummary] = Encoder.instance { ds =>
+    Json.obj(
+      "running"   -> ds.running.asJson,
+      "pending"   -> ds.pending.asJson,
+      "completed" -> ds.completed.asJson,
+      "failed"    -> ds.failed.asJson
+    )
+  }
+
+  // ── Health ───────────────────────────────────────────────────────────────
+
+  given Encoder[health.HealthCheck] = Encoder[String].contramap(health.HealthCheck.toString)
+
+  given Encoder[HealthStatus] = Encoder.instance { h =>
+    Json.obj(
+      "name"     -> h.details.getOrElse("unspecified").asJson,
+      "status"   -> h.status.asJson,
+      "node"     -> h.node.asJson,
+      "check_id" -> h.id.asJson
+    )
+  }
+
+  // ── Runtime summary ──────────────────────────────────────────────────────
+
+  given Encoder[Nelson.RuntimeSummary] = Encoder.instance { rs =>
+    Json.obj(
+      "scheduler"      -> rs.deployment.asJson,
+      "consul_health"  -> rs.health.asJson,
+      "current_status" -> rs.currentStatus.toString.asJson,
+      "expires_at"     -> rs.expiresAt.asJson
+    )
+  }
+
+  // ── Namespace name ───────────────────────────────────────────────────────
+
+  given Decoder[NamespaceName] = Decoder[String].emap(s =>
+    NamespaceName.fromString(s).leftMap(_.getMessage)
+  )
+
+  final case class NamespaceNameJson(namespace: NamespaceName)
+
+  given Decoder[NamespaceNameJson] = Decoder.instance { c =>
+    c.downField("namespace").as[NamespaceName].map(NamespaceNameJson.apply)
+  }
+
+  // ── Commit unit ──────────────────────────────────────────────────────────
+
+  given Decoder[Nelson.CommitUnit] = Decoder.instance { c =>
+    for {
+      u  <- c.downField("unit").as[String]
+      v  <- c.downField("version").as[String]
+      t  <- c.downField("target").as[NamespaceName]
+      vv <- Version.fromString(v).toRight(DecodingFailure(s"unable to parse $v into a version", c.history))
+    } yield Nelson.CommitUnit(u, vv, t)
+  }
+
+  // ── Traffic shift ────────────────────────────────────────────────────────
+
+  given Encoder[Datacenter.TrafficShift] = Encoder.instance { ts =>
+    Json.obj(
+      "from"    -> ts.from.asJson,
+      "to"      -> ts.to.asJson,
+      "start"   -> ts.start.asJson,
+      "end"     -> ts.end.asJson,
+      "reverse" -> ts.reverse.asJson,
+      "policy"  -> ts.policy.ref.asJson
+    )
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  /** Encode a map as a transposed JSON list of maps: [{klabel: k, vlabel: v}, ...] */
+  def encodeTransposeMap[K: Encoder, V: Encoder](klabel: String, vlabel: String): Encoder[Map[K, V]] =
+    Encoder.instance { m =>
+      m.toList.map { case (k, v) =>
+        Json.obj(klabel -> k.asJson, vlabel -> v.asJson)
+      }.asJson
+    }
 }

@@ -23,25 +23,16 @@ import nelson.routing.Discovery
 
 import cats.~>
 import cats.data.Kleisli
-import cats.effect.{Effect, IO}
+import cats.effect.IO
 import cats.implicits._
 import nelson.CatsHelpers._
 
-import fs2.{Scheduler, Sink, Stream}
+import fs2.{Pipe, Stream}
 
 import scala.util.control.NonFatal
 
 /**
-  * Infrequently running cleanup of "leaked" data or data which is otherwise unaccounted for.  Unlike the cleanup
-  * process (which is optimized for precision and efficiency), the Sweeper is optimized for comprehensiveness over time
-  * via repeated execution (even if we miss some "garbage" on execution i, we will eventually clean it up on excution i + N).
-  * We only need to ensure that we 1.) cleanup data that was missed during the Cleanup operation
-  * and 2.) ensure we aren't progressively leaking resources over the long-term.
-  *
-  * Items that are identified as an "UnclaimedResource" (items that have no obvious owner -- which may or may not be garbage) are NOT deleted
-  * but will be tracked and counted by the end of the task.  The number of Unclaimed Resources will be recorded as a histogram, to allow
-  * us to have visibility of accumulation on such items.  In the event that we discover that the amount of Unclaimed Resources is increasing over time
-  * this is a possible indication that we have a major leakage signaling the need to modify the sweeper to be more aggressive.
+  * Infrequently running cleanup of "leaked" data or data which is otherwise unaccounted for.
   */
 object Sweeper {
 
@@ -50,7 +41,7 @@ object Sweeper {
   final case class UnclaimedResources(n: Int)
   final case object SingleUnclaimedResource
 
-  type SweeperHelmOp = (Datacenter, Either[UnclaimedResources,ConsulOp.ConsulOpF[Unit]])
+  type SweeperHelmOp = (Datacenter, Either[UnclaimedResources, ConsulOp.ConsulOpF[Unit]])
   type SweeperHelmOps = List[SweeperHelmOp]
 
   def cleanupLeakedConsulDiscoveryKeys(cfg: NelsonConfig): IO[SweeperHelmOps] =
@@ -74,27 +65,26 @@ object Sweeper {
       } yield deleteOps :+ unclaimedResource
     }
 
-  def process(cfg: NelsonConfig)(implicit unclaimedResourceTracker: Kleisli[IO, (Datacenter, Int), Unit]): Stream[IO, Unit] =
-    Stream.repeatEval(IO(cfg.cleanup.sweeperDelay)).flatMap { d =>
-      Scheduler.fromScheduledExecutorService(cfg.pools.schedulingPool).awakeEvery(d)(Effect[IO], cfg.pools.schedulingExecutor).head
-    }.flatMap(_ =>
+  def process(cfg: NelsonConfig)(using unclaimedResourceTracker: Kleisli[IO, (Datacenter, Int), Unit]): Stream[IO, Unit] =
+    Stream.fixedDelay[IO](cfg.cleanup.sweeperDelay).flatMap { _ =>
       Stream.eval(timer(cleanupLeakedConsulDiscoveryKeys(cfg)))
-        .attempt.observeW(cfg.auditor.errorSink)(Effect[IO], cfg.pools.defaultExecutor)
+        .attempt.observeW(cfg.auditor.errorSink)
         .stripW
-    )
-    .flatMap(os => Stream.emits(os).covary[IO]) to sweeperSink
-
-  def sweeperSink(implicit unclaimedResourceTracker: Kleisli[IO, (Datacenter, Int), Unit]): Sink[IO, SweeperHelmOp] =
-    Sink {
-      case (dc, Left(UnclaimedResources(n))) => unclaimedResourceTracker.run(dc -> n) recoverWith {
-        case NonFatal(e) => IO(log.error(s"error while attempting to track unclaimed resources", e))
-      }
-      case (dc, Right(op)) => helm.run(dc.consul, op) recoverWith {
-        case NonFatal(e) => IO(log.error(s"error while attempting to perform consul operation", e))
-      }
+        .flatMap(os => Stream.emits(os))
+        .through(sweeperSink)
     }
 
-  val timer : IO ~> IO = Metrics.timer(
+  def sweeperSink(using unclaimedResourceTracker: Kleisli[IO, (Datacenter, Int), Unit]): Pipe[IO, SweeperHelmOp, Nothing] =
+    _.evalMap {
+      case (dc, Left(UnclaimedResources(n))) => unclaimedResourceTracker.run(dc -> n).recoverWith {
+        case NonFatal(e) => IO(log.error(s"error while attempting to track unclaimed resources", e))
+      }
+      case (dc, Right(op)) => helm.run(dc.consul, op).recoverWith {
+        case NonFatal(e) => IO(log.error(s"error while attempting to perform consul operation", e))
+      }
+    }.drain
+
+  val timer: IO ~> IO = Metrics.timer(
     before = IO.pure(()),
     onComplete = Kleisli[IO, Double, Unit] { elapsed =>
       IO(Metrics.default.sweeperLatencySeconds.observe(elapsed))
@@ -110,7 +100,7 @@ object Sweeper {
 object SweeperDefaults {
   type NumberWithinDC = (Datacenter, Int)
 
-  implicit val unclaimedResourceTracker : Kleisli[IO, NumberWithinDC, Unit] = Kleisli { case (dc, n) =>
+  given unclaimedResourceTracker: Kleisli[IO, NumberWithinDC, Unit] = Kleisli { case (dc, n) =>
     IO(Metrics.default.sweeperUnclaimedResourcesDetected.labels(dc.toString).observe(n.toDouble))
   }
 }

@@ -17,13 +17,15 @@
 package nelson
 package routing
 
-
 import helm.ConsulOp
 import cats.Foldable
 import cats.data.NonEmptyList
 import cats.implicits._
 import scala.collection.immutable.SortedMap
 import journal._
+
+import io.circe.{Encoder, Decoder, Json}
+import io.circe.syntax._
 
 object Discovery {
 
@@ -34,48 +36,52 @@ object Discovery {
 
   import Datacenter._
   import NamespaceName._
-  import argonaut._
-  import Argonaut._
   import NamedService._
 
   final case class DeploymentDiscovery(defaultNamespace: NamespaceName,
                                  domain: String,
                                  namespaces: DiscoveryTables)
 
-  implicit val ddCodec: EncodeJson[DeploymentDiscovery] =
-    EncodeJson(dd =>
-      ("defaultNamespace" := dd.defaultNamespace.asString) ->:
-      ("domain" := dd.domain) ->:
-      ("namespaces" := dd.namespaces) ->:
-        jEmptyObject
-
+  given Encoder[RoutePath] = Encoder.instance { rp =>
+    Json.obj(
+      "stack"    -> rp.stack.stackName.toString.asJson,
+      "port"     -> rp.port.asJson,
+      "protocol" -> rp.protocol.asJson,
+      "weight"   -> rp.weight.asJson
     )
+  }
 
-  implicit val encodeRT: EncodeJson[DiscoveryTables] =
-    EncodeJson(rt =>
-      rt.foldLeft(jEmptyArray) { case (a, (k, v)) =>
-        val routes = v.foldLeft(jEmptyArray) { case (a, (k, v)) =>
-          val r = ("service" := k.serviceType) ->: ("targets" := v.toList) ->: ("port" := v.head.j.portName)->: jEmptyObject
-          r -->>: a
-        }
-        val ns = ("name" := k.asString) ->: ("routes" := routes) ->: jEmptyObject
+  given Encoder[Version] = Encoder[String].contramap(_.toString)
+  given Decoder[Version] = Decoder[String].emap(s =>
+    Version.fromString(s).toRight(s"Invalid version: $s")
+  )
 
-        ns -->>: a
+  given Encoder[StackName] = Encoder.forProduct3("serviceType", "version", "hash")(
+    sn => (sn.serviceType, sn.version, sn.hash)
+  )
+  given Decoder[StackName] = Decoder.forProduct3("serviceType", "version", "hash")(StackName.apply)
+
+  given Encoder[DiscoveryTables] = Encoder.instance { rt =>
+    rt.foldLeft(Json.arr()) { case (a, (k, v)) =>
+      val routes = v.foldLeft(Json.arr()) { case (a, (k, v)) =>
+        val r = Json.obj(
+          "service" -> k.serviceType.asJson,
+          "targets" -> v.toList.asJson,
+          "port"    -> v.head.j.portName.asJson
+        )
+        Json.arr((r +: a.asArray.getOrElse(Vector.empty))*)
       }
+      val ns = Json.obj("name" -> k.asString.asJson, "routes" -> routes)
+      Json.arr((ns +: a.asArray.getOrElse(Vector.empty))*)
+    }
+  }
+
+  given Encoder[DeploymentDiscovery] = Encoder.instance { dd =>
+    Json.obj(
+      "defaultNamespace" -> dd.defaultNamespace.asString.asJson,
+      "domain"           -> dd.domain.asJson,
+      "namespaces"       -> dd.namespaces.asJson
     )
-
-  implicit val versionEncode: EncodeJson[Version] = implicitly[EncodeJson[String]].contramap[Version](_.toString)
-  implicit val versionDecode: DecodeJson[Version] =
-    DecodeJson.optionDecoder(_.string.flatMap(Version.fromString), "Version")
-
-  implicit val stackNameCodec: CodecJson[StackName] =
-    CodecJson.casecodec3(StackName.apply, StackName.unapply)("serviceType", "version", "hash")
-
-  implicit val rpEncode: EncodeJson[RoutePath] = EncodeJson[RoutePath] { rp =>
-    ("stack" := rp.stack.stackName.toString)  ->:
-    ("port" := rp.port)                       ->:
-    ("protocol" := rp.protocol)               ->:
-    ("weight" := rp.weight)                   ->: jEmptyObject
   }
 
   def discoveryTables[F[_]: Foldable](graphs: F[(Namespace, RoutingGraph)]): SortedMap[(StackName,NamespaceName), DiscoveryTables] = {

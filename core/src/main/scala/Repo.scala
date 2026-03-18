@@ -16,7 +16,6 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
-import ca.mrvisser.sealerate
 import cats.implicits._
 
 final case class Repo(
@@ -84,7 +83,7 @@ object RepoAccess {
   case object Forbidden extends RepoAccess
   case object Unknown extends RepoAccess
 
-  val all: Set[RepoAccess] = sealerate.values[RepoAccess]
+  val all: Set[RepoAccess] = Set(Admin, Push, Pull, Forbidden, Unknown)
 
   def fromBools(admin: Boolean, push: Boolean, pull: Boolean): RepoAccess =
     if(admin) Admin

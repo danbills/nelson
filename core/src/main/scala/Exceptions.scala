@@ -108,10 +108,9 @@ final case class FailedWorkflow(name: String, reason: String = "")
   extends NelsonError(s"workflow '$name' failed to execute. $reason")
 
 object UnsatisfiedDeploymentRequirements {
-  import Manifest.Versioned
 
-  def apply(u: Manifest.UnitDef @@ Versioned): UnsatisfiedDeploymentRequirements =
-    UnsatisfiedDeploymentRequirements(Versioned.unwrap(u))
+  def apply(u: Manifest.Versioned[Manifest.UnitDef]): UnsatisfiedDeploymentRequirements =
+    UnsatisfiedDeploymentRequirements(Manifest.Versioned.unwrap(u))
 }
 
 final case class ManifestUnitKindMismatch(unitKind: String, unitNames: List[String]) extends NelsonError(

@@ -18,109 +18,114 @@ package nelson
 package vault
 package http4s
 
-import argonaut._, Argonaut._
-import argonaut.DecodeResultCats._
-
-import cats.instances.stream._
-import cats.syntax.foldable._
+import io.circe.{Decoder, DecodingFailure, Encoder, Json}
+import io.circe.syntax._
 
 import scala.collection.immutable.SortedMap
 
 trait Json {
   import Vault._
 
-  implicit val encodeRule: EncodeJson[Rule] = EncodeJson { _ =>
-    jEmptyObject
+  given Encoder[Rule] = Encoder.instance(_ => Json.obj())
+
+  given Encoder[CreatePolicy] = Encoder.instance { cp =>
+    def capabilitiesOpt(rule: Rule): Option[List[String]] = rule.capabilities match {
+      case Nil => None
+      case cs  => Some(cs)
+    }
+
+    def ruleJson(rule: Rule): (String, Json) = {
+      val fields = List(
+        rule.policy.map(p => "policy" -> Json.fromString(p)),
+        capabilitiesOpt(rule).map(cs => "capabilities" -> cs.asJson)
+      ).flatten
+      rule.path -> Json.obj(fields*)
+    }
+
+    val pathObj = Json.obj(cp.rules.map(ruleJson)*)
+    val innerJson = Json.obj("path" -> pathObj).noSpaces
+    Json.obj("policy" -> Json.fromString(innerJson))
   }
 
-  implicit val enodeCreatePolicyJson: EncodeJson[CreatePolicy] = EncodeJson { cp =>
-    def capabilities(rule: Rule) =
-      rule.capabilities match {
-        case Nil => None
-        case cs => Some(cs)
-      }
-
-    def path(rule: Rule) =
-      (rule.path := {
-        ("policy" :?= rule.policy) ->?:
-        ("capabilities" :?= capabilities(rule)) ->?:
-        jEmptyObject
-      })
-
-    jSingleObject("policy",
-      jString( // So, yeah, rules is embedded HCL/JSON as a string.
-        jSingleObject("path", jObjectFields(cp.rules.map(path): _*)).nospaces))
+  given Decoder[Initialized] = Decoder.instance { c =>
+    c.downField("initialized").as[Boolean].map(Initialized.apply)
   }
 
-  implicit val jsonInitialized: DecodeJson[Initialized] = DecodeJson { c =>
+  def jsonMount(path: String): Decoder[Mount] = Decoder.instance { c =>
     for {
-      i <- (c --\ "initialized").as[Boolean]
-    } yield Initialized(i)
-  }
-
-  def jsonMount(path: String): DecodeJson[Mount] = DecodeJson { c =>
-    for {
-      defaultLease <- (c --\ "config" --\ "default_lease_ttl").as[Int]
-      maxLease <- (c --\ "config" --\ "max_lease_ttl").as[Int]
-      tipe <- (c --\ "type").as[String]
-      desc <- (c --\ "description").as[String]
+      defaultLease <- c.downField("config").downField("default_lease_ttl").as[Int]
+      maxLease     <- c.downField("config").downField("max_lease_ttl").as[Int]
+      tipe         <- c.downField("type").as[String]
+      desc         <- c.downField("description").as[String]
     } yield Mount(path, tipe, desc, defaultLease, maxLease)
   }
 
-  implicit val jsonMountMap: DecodeJson[SortedMap[String, Mount]] = DecodeJson { c =>
-    def go(obj: JsonObject): DecodeResult[SortedMap[String, Mount]] =
-      obj.toMap.toStream.foldLeftM[DecodeResult, SortedMap[String, Mount]](SortedMap.empty) {
-        // mounts end with '/'. Starting circa vault-0.6.2, this response includes keys that aren't mounts. */ =>
-        case (res, (jf,js)) if jf.endsWith("/") =>
-          jsonMount(jf).decodeJson(js).flatMap(m => DecodeResult.ok(res + (jf -> m)))
-        case (res, _) =>
-          DecodeResult.ok(res)
-      }
-
-    c.focus.obj.fold[DecodeResult[SortedMap[String, Mount]]](DecodeResult.fail("expected mounts to be a JsonObject", c.history))(go)
+  given Decoder[SortedMap[String, Mount]] = Decoder.instance { c =>
+    c.value.asObject match {
+      case None =>
+        Left(DecodingFailure("expected mounts to be a JsonObject", c.history))
+      case Some(obj) =>
+        obj.toList
+          .filter(_._1.endsWith("/"))
+          .foldLeft[Decoder.Result[SortedMap[String, Mount]]](Right(SortedMap.empty)) {
+            case (Right(acc), (key, json)) =>
+              jsonMount(key).decodeJson(json).map(m => acc + (key -> m))
+            case (left, _) => left
+          }
+    }
   }
 
-  implicit val jsonRootToken: DecodeJson[RootToken] = implicitly[DecodeJson[String]].map(RootToken.apply)
+  given Decoder[RootToken] = Decoder[String].map(RootToken.apply)
 
-  implicit val jsonInitialCreds: DecodeJson[InitialCreds] = DecodeJson[InitialCreds] { c =>
+  given Decoder[InitialCreds] = Decoder.instance { c =>
     for {
-      k <- (c --\ "keys").as[List[MasterKey]]
-      t <- (c --\ "root_token").as[RootToken]
-    } yield InitialCreds(k,t)
+      k <- c.downField("keys").as[List[MasterKey]]
+      t <- c.downField("root_token").as[RootToken]
+    } yield InitialCreds(k, t)
   }
 
-  implicit val jsonInitialization: CodecJson[Initialization] = casecodec2(Initialization.apply,Initialization.unapply)("secret_shares", "secret_threshold")
+  given Encoder[Initialization] =
+    Encoder.forProduct2("secret_shares", "secret_threshold")(i => (i.secretShares, i.secretThreshold))
 
-  implicit val jsonSealStatus: DecodeJson[SealStatus] = casecodec4(SealStatus.apply, SealStatus.unapply)("sealed", "n", "t", "progress")
+  given Decoder[Initialization] =
+    Decoder.forProduct2("secret_shares", "secret_threshold")(Initialization.apply)
 
-  val jsonUnseal: EncodeJson[String] = EncodeJson { s =>
-    ("key" := s) ->: jEmptyObject
+  // "n" = total, "t" = quorum per vault API
+  given Decoder[SealStatus] =
+    Decoder.forProduct4("sealed", "n", "t", "progress")(SealStatus.apply)
+
+  val jsonUnseal: Encoder[String] = Encoder.instance { s =>
+    Json.obj("key" -> Json.fromString(s))
   }
 
-  implicit val jsonCreateToken: EncodeJson[CreateToken] = EncodeJson { ct =>
-    ("policies" :?= ct.policies) ->?:
-    ("renewable" := ct.renewable) ->:
-    ("ttl" :?= ct.ttl.map(d => s"${d.toMillis}ms")) ->?:
-    ("num_uses" := ct.numUses) ->:
-    jEmptyObject
+  given Encoder[CreateToken] = Encoder.instance { ct =>
+    val fields = List(
+      ct.policies.map(p => "policies" -> p.asJson),
+      Some("renewable" -> Json.fromBoolean(ct.renewable)),
+      ct.ttl.map(d => "ttl" -> Json.fromString(s"${d.toMillis}ms")),
+      Some("num_uses" -> Json.fromLong(ct.numUses))
+    ).flatten
+    Json.obj(fields*)
   }
 
-  implicit val jsonCreateKubernetesRole: EncodeJson[CreateKubernetesRole] =
-    EncodeJson { kr =>
-      ("bound_service_account_names" := kr.serviceAccountNames) ->:
-      ("bound_service_account_namespaces" := kr.seviceAccountNamespaces) ->:
-      ("ttl" :?= kr.defaultLeaseTTL.map(d => s"${d.toMillis}ms")) ->?:
-      ("max_ttl" :?= kr.maxLeaseTTL.map(d => s"${d.toMillis}ms")) ->?:
-      ("policies" :?= kr.policies) ->?:
-      jEmptyObject
-    }
+  given Encoder[CreateKubernetesRole] = Encoder.instance { kr =>
+    val fields = List(
+      Some("bound_service_account_names" -> kr.serviceAccountNames.asJson),
+      Some("bound_service_account_namespaces" -> kr.seviceAccountNamespaces.asJson),
+      kr.defaultLeaseTTL.map(d => "ttl" -> Json.fromString(s"${d.toMillis}ms")),
+      kr.maxLeaseTTL.map(d => "max_ttl" -> Json.fromString(s"${d.toMillis}ms")),
+      kr.policies.map(p => "policies" -> p.asJson)
+    ).flatten
+    Json.obj(fields*)
+  }
 
-  implicit val jsonCreatePKIRole: EncodeJson[CreatePKIRole] =
-    EncodeJson { cpkir =>
-      ("name" := cpkir.serviceAccountNames) ->:
-      ("ttl" :?= cpkir.defaultLeaseTTL.map(d => s"${d.toMillis}ms")) ->?:
-      ("max_ttl" :?= cpkir.maxLeaseTTL.map(d => s"${d.toMillis}ms")) ->?:
-      ("allow_localhost" := cpkir.allowLocalhost) ->:
-      jEmptyObject
-    }
+  given Encoder[CreatePKIRole] = Encoder.instance { cpkir =>
+    val fields = List(
+      Some("name" -> cpkir.serviceAccountNames.asJson),
+      cpkir.defaultLeaseTTL.map(d => "ttl" -> Json.fromString(s"${d.toMillis}ms")),
+      cpkir.maxLeaseTTL.map(d => "max_ttl" -> Json.fromString(s"${d.toMillis}ms")),
+      Some("allow_localhost" -> Json.fromBoolean(cpkir.allowLocalhost))
+    ).flatten
+    Json.obj(fields*)
+  }
 }

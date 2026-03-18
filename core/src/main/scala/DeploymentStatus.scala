@@ -16,14 +16,14 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
-import ca.mrvisser.sealerate
 import cats.data.NonEmptyList
 import cats.syntax.list._
+
+import io.circe.{Decoder, Encoder}
 
 sealed abstract class DeploymentStatus extends Product with Serializable
 
 object DeploymentStatus {
-  import argonaut.DecodeJson
 
   def fromString(str: String): DeploymentStatus =
     stringToDeploymentStatus.get(str.toLowerCase.trim).getOrElse(Unknown)
@@ -64,18 +64,20 @@ object DeploymentStatus {
     override def toString = "terminated"
   }
 
-  val all: Set[DeploymentStatus] = sealerate.values[DeploymentStatus]
+  val all: Set[DeploymentStatus] = Set(
+    Pending, Deploying, Warming, Ready, Garbage, Failed, Unknown, Deprecated, Terminated
+  )
 
   val nel: NonEmptyList[DeploymentStatus] = all.toList.toNel.yolo("there should be at least one DeploymentStatus")
 
   // Deployments with a routable status are included in the routing graph.
-  // Ready is the common case and inidcates that a deployment is ready to receive traffic.
+  // Ready is the common case and indicates that a deployment is ready to receive traffic.
   // Deprecated deployments are included in routing graph until all upstreams have upgraded.
-  val routable = NonEmptyList.of(Ready,Deprecated)
+  val routable = NonEmptyList.of(Ready, Deprecated)
 
   private val stringToDeploymentStatus: Map[String, DeploymentStatus] =
     all.map(x => x.toString -> x).toMap
 
-  implicit val deploymentStatusDecoder: DecodeJson[DeploymentStatus] =
-    DecodeJson.StringDecodeJson.map(fromString)
+  given Encoder[DeploymentStatus] = Encoder[String].contramap(_.toString)
+  given Decoder[DeploymentStatus] = Decoder[String].map(fromString)
 }

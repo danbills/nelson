@@ -386,11 +386,10 @@ object Datacenter {
                                 msg: Option[String])
 
   object StatusUpdate {
-    import argonaut.DecodeJson
-    import routing.Discovery.stackNameCodec
+    import io.circe.Decoder
+    import routing.Discovery.given
 
-    implicit val decodeStatusUpdate: DecodeJson[StatusUpdate] =
-      DecodeJson.jdecode3L(StatusUpdate.apply)("stack", "status", "msg")
+    given Decoder[StatusUpdate] = Decoder.forProduct3("stack", "status", "msg")(StatusUpdate.apply)
   }
 
 }

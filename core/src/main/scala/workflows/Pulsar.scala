@@ -32,7 +32,7 @@ import nelson.docker.DockerOp
 object Pulsar extends Workflow[Unit] {
   val name: WorkflowRef = "pulsar"
 
-  def deploy(id: ID, hash: String, vunit: UnitDef @@ Versioned, p: Plan, dc: Datacenter, ns: ManifestNamespace): WorkflowF[Unit] = {
+  def deploy(id: ID, hash: String, vunit: Manifest.Versioned[UnitDef], p: Plan, dc: Datacenter, ns: ManifestNamespace): WorkflowF[Unit] = {
     val unit = Manifest.Versioned.unwrap(vunit)
     val sn = Datacenter.StackName(unit.name, vunit.version, hash)
     val rs = unit.dependencies.keys.toSet ++ unit.resources.map(_.name)

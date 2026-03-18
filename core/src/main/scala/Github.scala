@@ -18,15 +18,14 @@ package nelson
 
 import cats.effect.IO
 
-import ca.mrvisser.sealerate
-
 import java.net.URI
 
-import org.http4s.{Request => HttpRequest, Response => HttpResponse, argonaut => _, _}
-import org.http4s.argonaut._
+import org.http4s.{Request => HttpRequest, Response => HttpResponse, _}
 import org.http4s.client.{Client, UnexpectedStatus}
+import org.http4s.circe._
+import org.typelevel.ci.CIString
 
-import scala.concurrent.ExecutionContext
+import io.circe.syntax._
 
 object Github {
   final case class WebHook(
@@ -86,10 +85,6 @@ object Github {
 
   /**
    * Reference https://developer.github.com/v3/activity/events/types/#pullrequestevent
-   *
-   * This event definition is a placeholder for future support for inbound pull request
-   * deployments. This skeleton is being provided so that Nelson can parse the inbound
-   * payload and give a 200 OK response so Github doesn't think Nelson is faulty.
    */
   final case class PullRequestEvent(
     id: Long,
@@ -99,10 +94,6 @@ object Github {
 
   /**
    * Reference: https://developer.github.com/v3/activity/events/types/#releaseevent
-   *
-   * Nelson still accepts these as inbound input for historical reasons, so we
-   * simply accept it on the webhook entrypoint so that Github does not get invalid
-   * responses from Nelson (putting the webhook into an unsafe state).
    */
   final case class ReleaseEvent(
     id: Long,
@@ -154,16 +145,9 @@ object Github {
 
   sealed trait Reference
   object Reference {
-    /* NOTE(timperrett): this uses a fairly simplistic heuristic to figure out
-     * what kind of ref we're dealing with. This is - depending on your view - 
-     * actually quite fragile. Given Nelson is expecting SemVer for released
-     * versions of software, we assume tags are always parsable as Version
-     */
     def fromString(str: String, sha: Option[String] = None): Reference =
       if (sha.exists(_ == str.trim.toLowerCase)) Sha(str)
       else {
-        // if we got here, then it wasn't a Sha (as we cant use something simple 
-        // like strlen as a strong enough indicator)
         Version.fromString(str).map(Tag(_)) getOrElse {
           sha.fold(Branch(str))(x => Branch(str, Some(x)))
         }
@@ -221,7 +205,7 @@ object Github {
   object Request {
 
     /**
-     * Given a tempoary access code during OAuth login, callback
+     * Given a temporary access code during OAuth login, callback
      * to github to change it into a legit access token that we can
      * use to make API calls on the users behalf.
      */
@@ -238,37 +222,35 @@ object Github {
       Free.liftF(GetOrganizations(keys, token))
 
     /**
-     * given a user access token, recursivly fetch all the repositories said
+     * given a user access token, recursively fetch all the repositories said
      * user is an admin or collaborator for.
      */
     def listUserRepositories(token: AccessToken): GithubOpF[List[Repo]] =
       Free.liftF(GetUserRepositories(token))
 
-    /** * https://developer.github.com/v3/repos/contents/#get-contents */
+    /** https://developer.github.com/v3/repos/contents/#get-contents */
     def fetchFileFromRepository(s: Slug, p: String, ref: Reference)(t: AccessToken):  GithubOpF[Option[Github.Contents]] =
       Free.liftF(GetFileFromRepository(s, p, ref, t))
 
-    /** * https://developer.github.com/v3/repos/hooks/#list-hooks */
+    /** https://developer.github.com/v3/repos/hooks/#list-hooks */
     def fetchRepoWebhooks(slug: Slug)(token: AccessToken): GithubOpF[List[Github.WebHook]] =
       Free.liftF(GetRepoWebHooks(slug, token))
 
-    /** * https://developer.github.com/v3/repos/hooks/#create-a-hook */
+    /** https://developer.github.com/v3/repos/hooks/#create-a-hook */
     def createRepoWebhook(slug: Slug, hook: Github.WebHook)(t: AccessToken): GithubOpF[Github.WebHook] =
       Free.liftF(PostRepoWebHook(slug, hook, t))
 
-    /** * https://developer.github.com/v3/repos/hooks/#delete-a-hook */
+    /** https://developer.github.com/v3/repos/hooks/#delete-a-hook */
     def deleteRepoWebhook(slug: Slug, id: Long)(token: AccessToken): GithubOpF[Unit] =
       Free.liftF(DeleteRepoWebHook(slug, id, token))
 
-    /** * https://developer.github.com/v3/repos/deployments/#get-a-single-deployment */
+    /** https://developer.github.com/v3/repos/deployments/#get-a-single-deployment */
     def getDeployment(slug: Slug, id: Long)(token: AccessToken): GithubOpF[Option[Github.Deployment]] =
       Free.liftF(GetDeployment(slug, id, token))
 
     /**
-     * retrieve the user-specifc information about the agent logging
-     * into the system. obtaining this information so we can have a neat
-     * user interface / experience without constantly fetching back
-     * to github.
+     * retrieve the user-specific information about the agent logging
+     * into the system.
      */
     def fetchUserData(token: AccessToken): GithubOpF[nelson.User] =
       for {
@@ -280,42 +262,29 @@ object Github {
 
   final class GithubHttp(
     cfg: GithubConfig,
-    client: Client[IO],
-    ec: ExecutionContext
+    client: Client[IO]
   ) extends (GithubOp ~> IO) {
     import Interpreter._
-    import nelson.Json._
-
-    import argonaut.DecodeJson
-    import argonaut.Argonaut._
-    import cats.instances.list._
-    import cats.instances.string._
+    import nelson.Json.given
+    import cats.implicits._
     import cats.syntax.applicativeError._
-    import fs2.async.parallelTraverse
-    import org.http4s.syntax.string._
 
-    implicit val githubHttpExecutionContext: ExecutionContext = ec
-
-    implicit def argonautEntityDecoder[A: DecodeJson]: EntityDecoder[IO, A] =
-      jsonOf[IO, A]
+    given [A: io.circe.Decoder]: EntityDecoder[IO, A] = jsonOf[IO, A]
+    given [A: io.circe.Encoder]: EntityEncoder[IO, A] = jsonEncoderOf[IO, A]
 
     def apply[A](in: GithubOp[A]): IO[A] = in match {
       case GetAccessToken(fromCode: String) =>
-        val json = argonaut.Json(
-          "client_id" := cfg.clientId,
-          "client_secret" := cfg.clientSecret,
-          "code" := fromCode
+        val json = io.circe.Json.obj(
+          "client_id"     -> cfg.clientId.asJson,
+          "client_secret" -> cfg.clientSecret.asJson,
+          "code"          -> fromCode.asJson
         )
 
         val request = HttpRequest[IO](Method.POST, cfg.tokenEndpoint)
-          .putHeaders(Header("Accept", "application/json"))
-          .withBody(json)
+          .putHeaders(Header.Raw(CIString("Accept"), "application/json"))
+          .withEntity(json)
 
-        val handler: HttpResponse[IO] => IO[AccessToken] = response => for {
-          actuallyDecoded <- response.as[AccessToken]
-        } yield actuallyDecoded
-
-        client.fetch(request)(handler)
+        client.fetch(request)(_.as[AccessToken])
 
       case GetUser(token: AccessToken) =>
         val request = HttpRequest[IO](Method.GET, cfg.userEndpoint).token(token)
@@ -326,7 +295,7 @@ object Github {
         client.expect[List[Github.OrgKey]](request)
 
       case GetOrganizations(keys: List[Github.OrgKey], t: AccessToken) =>
-        parallelTraverse(keys) { key =>
+        keys.parTraverse { key =>
           val request = HttpRequest[IO](Method.GET, cfg.orgEndpoint(key.slug)).token(t)
           client.expect[Organization](request)
         }
@@ -354,17 +323,14 @@ object Github {
         client.expect[List[Github.WebHook]](req).handleError(_ => List.empty)
 
       case PostRepoWebHook(slug: Slug, hook: Github.WebHook, t: AccessToken) =>
-        import argonaut._, Argonaut._
         val req = HttpRequest[IO](Method.POST, cfg.webhookEndpoint(slug))
           .token(t)
-          .withBody(hook.asJson)
+          .withEntity(hook.asJson)
         client.expect[Github.WebHook](req)
 
       case DeleteRepoWebHook(slug: Slug, id: Long, t: AccessToken) =>
-        // Apparently this only compiles if I inline everything into one expression
-        // Breaking out the request into a variable makes scalac complain IO[Unit] is not <: IO[A], love it
         client.expect[String](HttpRequest[IO](Method.DELETE, cfg.webhookEndpoint(slug) / id.toString).token(t)).map(_ => ()).recover {
-          case UnexpectedStatus(Status.NotFound) => ()
+          case UnexpectedStatus(Status.NotFound, _, _) => ()
         }
 
       case GetDeployment(slug: Slug, id: Long, t: AccessToken) =>
@@ -385,7 +351,7 @@ object Github {
         val empty = Map.empty[Step, Uri]
         val repos = response.as[List[Repo]]
 
-        val links = response.headers.get("Link".ci).map(_.value).fold(empty) { value =>
+        val links = response.headers.get(CIString("Link")).map(_.head.value).fold(empty) { value =>
           value.split(",").foldLeft(empty) { (map, repoLink) =>
             map ++ parseLink(repoLink).fold(empty)(Map(_))
           }.toMap
@@ -395,14 +361,14 @@ object Github {
       } else {
         val statusCode = response.status.code
         for {
-          b <- response.bodyAsText.compile.foldSemigroup
-          r <- IO.raiseError[(List[Repo], Map[Step, Uri])](GithubApiError(statusCode, b.mkString("")))
+          b <- response.bodyText.compile.foldSemigroup
+          r <- IO.raiseError[(List[Repo], Map[Step, Uri])](GithubApiError(statusCode, b.getOrElse("")))
         } yield r
       }
 
     /**
-    * for splitting the github links header output
-    */
+     * for splitting the github links header output
+     */
     private[nelson] def parseLink(in: String): Option[(Step, Uri)] = {
       if (in.nonEmpty) {
         val Array(uri,rel) = in.split(";")
@@ -420,9 +386,9 @@ object Github {
     }
   }
 
-  implicit class BedazzledRequest(val r: HttpRequest[IO]) extends AnyVal {
+  extension (r: HttpRequest[IO]) {
     def token(t: AccessToken): HttpRequest[IO] =
-      r.putHeaders(Header("Authorization", s"token ${t.value}"))
+      r.putHeaders(Header.Raw(CIString("Authorization"), s"token ${t.value}"))
   }
 
   object Interpreter {
@@ -434,7 +400,7 @@ object Github {
     final case object Last extends Step
 
     object Step {
-      val all: Set[Step] = sealerate.values[Step]
+      val all: Set[Step] = Set(Next, Prev, First, Last)
       def fromString(in: String): Option[Step] =
         all.find(_.toString.toLowerCase == in.toLowerCase)
     }

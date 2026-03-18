@@ -19,11 +19,11 @@ package audit
 
 
 final case class AuditLog(
-  id: ID, 
+  id: ID,
   timestamp: java.time.Instant,
-  releaseId: Option[Long], 
-  event: Option[argonaut.Json], 
-  category: String, 
+  releaseId: Option[Long],
+  event: Option[io.circe.Json],
+  category: String,
   action: String,
   login: Option[String]
 )

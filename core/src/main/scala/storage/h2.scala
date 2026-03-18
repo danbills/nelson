@@ -19,7 +19,7 @@ package storage
 
 import nelson.blueprint.{Blueprint, Template}
 
-import argonaut._
+import io.circe.parser.{parse => parseJson}
 
 import cats.{~>, Order, Semigroup}
 import cats.data.{NonEmptyList, OptionT, ValidatedNel}
@@ -175,7 +175,7 @@ final case class H2Storage(xa: Transactor[IO]) extends (StoreOp ~> IO) {
   }
 
   def auditLogFromRow(row: AuditRow): AuditLog =
-    AuditLog(row._1, row._2, row._3, Parse.parseOption(row._4), row._5, row._6, row._7)
+    AuditLog(row._1, row._2, row._3, parseJson(row._4).toOption, row._5, row._6, row._7)
 
   def audit[A](event: AuditEvent[A]): ConnectionIO[ID] = {
     val json = event.auditable.encode(event.event)
@@ -1311,7 +1311,7 @@ final case class H2Storage(xa: Transactor[IO]) extends (StoreOp ~> IO) {
      }
   }
 
-  def addUnit(vunit: Manifest.UnitDef @@ Versioned, repo_id: ID): ConnectionIO[Unit] = {
+  def addUnit(vunit: Manifest.Versioned[Manifest.UnitDef], repo_id: ID): ConnectionIO[Unit] = {
     val version = vunit.version
     val unit = Versioned.unwrap(vunit)
 
@@ -1564,7 +1564,7 @@ final case class H2Storage(xa: Transactor[IO]) extends (StoreOp ~> IO) {
     } yield rts
   }
 
-  def insertLoadbalancerIfAbsent(lbv: Manifest.Loadbalancer @@ Versioned, repoId: ID): ConnectionIO[ID] = {
+  def insertLoadbalancerIfAbsent(lbv: Manifest.Versioned[Manifest.Loadbalancer], repoId: ID): ConnectionIO[ID] = {
     def getLoadbalancerId(name: String, version: MajorVersion) =
       sql"""
         SELECT lb.id

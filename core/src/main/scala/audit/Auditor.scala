@@ -21,44 +21,46 @@ import nelson.storage.StoreOp
 
 import cats.~>
 import cats.effect.IO
+import cats.effect.std.Queue
 import cats.implicits._
 
-import fs2.{Sink, Stream}
-import fs2.async.mutable.Queue
+import fs2.{Pipe, Stream}
 
 import journal.Logger
 
-import scala.concurrent.ExecutionContext
-
-class Auditor(queue: Queue[IO, AuditEvent[_]], defaultLogin: String) {
+class Auditor(queue: Queue[IO, AuditEvent[?]], defaultLogin: String) {
 
   private[this] val logger = Logger[Auditor]
 
   @SuppressWarnings(Array("org.brianmckenna.wartremover.warts.IsInstanceOf"))
-  private def logSink: Sink[IO, AuditEvent[_]] =
-    Sink {
-      case AuditEvent(t: Throwable, _, _, _, login, _)  =>
+  private def logPipe: Pipe[IO, AuditEvent[?], Nothing] =
+    _.evalMap {
+      case AuditEvent(t: Throwable, _, _, _, login, _) =>
         IO(logger.error(s"[fatal] audit error event ${t.getMessage} by user ${login}"))
       case a =>
         IO(logger.info(s"[info] audit event ${a.event} action ${a.action} by user ${a.userLogin}"))
-    }
+    }.drain
 
-  private def persist(stg: StoreOp ~> IO): Sink[IO, AuditEvent[_]] =
-    Sink { a =>
+  private def persistPipe(stg: StoreOp ~> IO): Pipe[IO, AuditEvent[?], Nothing] =
+    _.evalMap { a =>
       storage.StoreOp.audit(a).void.foldMap(stg).recoverWith {
         case t => IO(logger.error(s"[fatal] audit error while persisting event ${t.getMessage}"))
       }
-    }
+    }.drain
 
-  def auditSink[A](action: AuditAction)(implicit au: Auditable[A]): Sink[IO, A] =
-    Sink(a => write(a, action)(au))
+  def auditSink[A](action: AuditAction)(using au: Auditable[A]): Pipe[IO, A, Nothing] =
+    _.evalMap(a => write(a, action)(using au)).drain
 
-  def errorSink: Sink[IO, Throwable] =
-    Sink(t => IO(logger.error(t.getMessage))) // possibly truncate
+  def errorSink: Pipe[IO, Throwable, Nothing] =
+    _.evalMap(t => IO(logger.error(t.getMessage))).drain
 
-  def write[A](a: A, action: AuditAction, releaseId: Option[Long] = None, login: String = defaultLogin)(implicit au: Auditable[A]): IO[Unit] =
-    queue.enqueue1(AuditEvent(a, action, releaseId, login))
+  def write[A](a: A, action: AuditAction, releaseId: Option[Long] = None, login: String = defaultLogin)(using au: Auditable[A]): IO[Unit] =
+    queue.offer(AuditEvent(a, action, releaseId, login))
 
-  def process(stg: (StoreOp ~> IO))(implicit ec: ExecutionContext): Stream[IO, Unit] =
-    (queue.dequeue.observe(persist(stg))).attempt.collect { case Right(a) => a }.to(logSink)
+  def process(stg: StoreOp ~> IO): Stream[IO, Unit] =
+    Stream.fromQueueUnterminated(queue)
+      .observe(persistPipe(stg))
+      .attempt
+      .collect { case Right(a) => a }
+      .through(logPipe)
 }

@@ -18,7 +18,7 @@ package nelson
 package cleanup
 
 import nelson.Datacenter.{Deployment, Namespace}
-import nelson.Metrics.default.{destroyFailureCounter,destroySuccessCounter}
+import nelson.Metrics.default.{destroyFailureCounter, destroySuccessCounter}
 import nelson.Workflow.WorkflowOp
 import nelson.notifications.Notify
 
@@ -27,7 +27,7 @@ import cats.effect.IO
 import cats.syntax.applicativeError._
 import cats.syntax.apply._
 
-import fs2.Sink
+import fs2.Pipe
 
 import scala.util.control.NonFatal
 
@@ -39,29 +39,25 @@ object Reaper {
 
   /*
    * Runs destroy workflow to decommission a deployment.
-   * This typically invovles making a call to whatever
-   * scheduler was used to initially place the deployment
-   * to delete the running job.
    */
-  def reap(cfg: NelsonConfig): Sink[IO, CleanupRow] =
-    Sink { case (dc, ns, d, _) =>
-      destroy(dc,ns,d.deployment)(dc.workflow)(cfg)
+  def reap(cfg: NelsonConfig): Pipe[IO, CleanupRow, Nothing] =
+    _.evalMap { case (dc, ns, d, _) =>
+      destroy(dc, ns, d.deployment)(dc.workflow)(cfg)
         .map { _ => destroySuccessCounter.labels(ns.name.asString).inc() }
         .recoverWith {
-          // this is a Sink and the end of the world, so we need to handle NonFatal to keep Processes running
           case NonFatal(e) =>
             destroyFailureCounter.labels(ns.name.asString).inc()
             IO(log.warn(s"error occured during destroy phase $e"))
         }
-    }
+    }.drain
 
   private def destroy(dc: Datacenter, ns: Namespace, d: Datacenter.Deployment)(t: WorkflowOp ~> IO)(cfg: NelsonConfig): IO[Unit] = {
     import Json._
     import audit.AuditableInstances._
-    resolve(d).destroy(d,dc,ns).foldMap(t) <*
+    resolve(d).destroy(d, dc, ns).foldMap(t) <*
       cfg.auditor.write(d, audit.DeleteAction) <*
-      IO(log.debug((s"finished cleaning up $d in datacenter $dc"))) <*
-      Notify.sendDecommissionedNotifications(dc,ns,d)(cfg)
+      IO(log.debug(s"finished cleaning up $d in datacenter $dc")) <*
+      Notify.sendDecommissionedNotifications(dc, ns, d)(cfg)
   }
 
   private def resolve(d: Deployment): Workflow[Unit] =

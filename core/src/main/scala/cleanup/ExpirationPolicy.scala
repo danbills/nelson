@@ -151,13 +151,13 @@ object ExpirationPolicy {
   }
 
   object Json {
-    import argonaut._, Argonaut._
-    implicit val policyEncoder: EncodeJson[ExpirationPolicy] =
-      EncodeJson((p: ExpirationPolicy) =>
-        ("policy" := p.name) ->:
-        ("description" := description(p)) ->:
-        jEmptyObject
+    import io.circe.{Encoder, Json => CJson}
+    given Encoder[ExpirationPolicy] = Encoder.instance { p =>
+      CJson.obj(
+        "policy"      -> CJson.fromString(p.name),
+        "description" -> CJson.fromString(description(p))
       )
+    }
   }
 }
 

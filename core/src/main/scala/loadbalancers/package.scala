@@ -17,7 +17,7 @@
 package nelson
 
 import Manifest._
-import Datacenter.{StackName,LoadbalancerDeployment}
+import Datacenter.{StackName, LoadbalancerDeployment}
 import helm.ConsulOp
 import routing._
 
@@ -31,12 +31,12 @@ package object loadbalancers {
     s"nelson/loadbalancers/v2/${name}"
 
   def writeLoadbalancerV1ConfigToConsul(sn: StackName, ins: Vector[Inbound]): ConsulOp.ConsulOpF[Unit] = {
-    import Json.V1InboundEncode
+    import Json.given_Encoder_Inbound
     ConsulOp.kvSetJson(loadbalancerKeyV1(sn.toString), ins)
   }
 
   def writeLoadbalancerV2ConfigToConsul(sn: StackName, routes: Vector[Route]): ConsulOp.ConsulOpF[Unit] = {
-    import Json.V2RouteEncode
+    import Json.given_Encoder_Tuple2_MajorVersion_Route
     val mv = sn.version.toMajorVersion
     ConsulOp.kvSetJson(loadbalancerKeyV2(sn.toString), routes.map((mv, _)))
   }
@@ -57,7 +57,8 @@ package object loadbalancers {
       ).map(_.port)
 
     graph.nodes.flatMap(_.loadbalancer).map { lb =>
-      val routes: Vector[Inbound] = graph.outs(RoutingNode(lb)).flatMap { case (d, _) =>
+      val routes: Vector[Inbound] = graph.outs(RoutingNode(lb)).flatMap { adj =>
+        val d = adj.label
         findPort(lb.loadbalancer.routes, d, lb.loadbalancer.version).map(p => Inbound(d.stack.stackName, d.portName, p.port))
       }
       (lb.stackName, routes)
@@ -74,24 +75,26 @@ package object loadbalancers {
     LoadbalancerOp.resize(lb, p)
 
   object Json {
-    import argonaut._, Argonaut._
+    import io.circe.{Encoder, Json}
+    import io.circe.syntax._
 
-    implicit lazy val V1InboundEncode: EncodeJson[Inbound] =
-      EncodeJson { a: Inbound =>
-        ("frontend_name" := s"${a.label}-${a.stackName.toString}") ->:
-        ("frontend_port" := a.port) ->:
-        ("backend_stack" := a.stackName.toString) ->:
-        ("port_label"    := a.label) ->:
-        jEmptyObject
-      }
+    given given_Encoder_Inbound: Encoder[Inbound] = Encoder.instance { a =>
+      Json.obj(
+        "frontend_name" -> Json.fromString(s"${a.label}-${a.stackName.toString}"),
+        "frontend_port" -> Json.fromInt(a.port),
+        "backend_stack" -> Json.fromString(a.stackName.toString),
+        "port_label"    -> Json.fromString(a.label)
+      )
+    }
 
-    implicit lazy val V2RouteEncode: EncodeJson[(MajorVersion, Route)] =
-      EncodeJson { case (mv, r) =>
-        ("frontend_port" := r.port.port) ->:
-        ("port_label"    := r.destination.portReference) ->:
-        ("service_name"  := r.destination.name) ->:
-        ("major_version" := mv.major) ->:
-        jEmptyObject
-      }
+    given given_Encoder_Tuple2_MajorVersion_Route: Encoder[(MajorVersion, Route)] = Encoder.instance {
+      case (mv, r) =>
+        Json.obj(
+          "frontend_port" -> Json.fromInt(r.port.port),
+          "port_label"    -> Json.fromString(r.destination.portReference),
+          "service_name"  -> Json.fromString(r.destination.name),
+          "major_version" -> Json.fromInt(mv.major)
+        )
+    }
   }
 }

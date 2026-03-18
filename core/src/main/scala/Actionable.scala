@@ -51,10 +51,10 @@ object Actionable {
    * launch the unit into a given datacenter using a scheduler such as
    * Nomad or Kubernetes.
    */
-  implicit val UnitDefActionable = new Actionable[UnitDef @@ Versioned] {
+  given UnitDefActionable: Actionable[Manifest.Versioned[UnitDef]] = new Actionable[Manifest.Versioned[UnitDef]] {
     import Manifest.{Namespace,Plan}
 
-    def create(u: UnitDef @@ Versioned, dc: Datacenter, ns: Namespace, plan: Plan, hash: String, exp: Instant, fallback: ExpirationPolicy): StoreOpF[Option[ID]] = {
+    def create(u: Manifest.Versioned[UnitDef], dc: Datacenter, ns: Namespace, plan: Plan, hash: String, exp: Instant, fallback: ExpirationPolicy): StoreOpF[Option[ID]] = {
       val unit = Manifest.Versioned.unwrap(u)
       val version = u.version
       val policy = Manifest.getExpirationPolicy(plan) getOrElse fallback
@@ -69,7 +69,7 @@ object Actionable {
        } yield id).value
     }
 
-    def action(unit: UnitDef @@ Versioned): Kleisli[IO, (NelsonConfig,ActionConfig), Unit] =
+    def action(unit: Manifest.Versioned[UnitDef]): Kleisli[IO, (NelsonConfig,ActionConfig), Unit] =
       Kleisli { case (cfg, actionConfig) =>
         val ttl = cfg.cleanup.initialTTL.toSeconds
         val exp = Instant.now.plusSeconds(ttl)
@@ -107,13 +107,13 @@ object Actionable {
    * A Versioned Loadbalancer Actionable interacts with Aws to launch all the
    * infrastructure needed to loadbalance / proxy outbound traffic into a datacenter.
    */
-  implicit val LoadbalancerActionable = new Actionable[Loadbalancer @@ Versioned] {
+  given LoadbalancerActionable: Actionable[Manifest.Versioned[Loadbalancer]] = new Actionable[Manifest.Versioned[Loadbalancer]] {
 
     import loadbalancers.LoadbalancerOp
     import Datacenter.StackName
     import Manifest.Route
 
-    def action(lbv: Loadbalancer @@ Versioned): Kleisli[IO, (NelsonConfig,ActionConfig), Unit] =
+    def action(lbv: Manifest.Versioned[Loadbalancer]): Kleisli[IO, (NelsonConfig,ActionConfig), Unit] =
       Kleisli { case (cfg, actionConfig) =>
         val lb = Manifest.Versioned.unwrap(lbv)
         val major = lbv.version.toMajorVersion

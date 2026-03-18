@@ -1,124 +1,140 @@
-//: ----------------------------------------------------------------------------
-//: Copyright (C) 2017 Verizon.  All Rights Reserved.
-//:
-//:   Licensed under the Apache License, Version 2.0 (the "License");
-//:   you may not use this file except in compliance with the License.
-//:   You may obtain a copy of the License at
-//:
-//:       http://www.apache.org/licenses/LICENSE-2.0
-//:
-//:   Unless required by applicable law or agreed to in writing, software
-//:   distributed under the License is distributed on an "AS IS" BASIS,
-//:   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//:   See the License for the specific language governing permissions and
-//:   limitations under the License.
-//:
-//: ----------------------------------------------------------------------------
 import nelson.Manifest.{Loadbalancer, UnitDef, Versioned}
 import nelson.Nelson.NelsonK
-import nelson.Versionable.AllOps
 
 package object nelson {
 
-  import argonaut.{Parse,DecodeJson}
+  import io.circe.{Decoder, parser}
+  import io.github.iltotore.iron.*
+  import io.github.iltotore.iron.constraint.all.*
 
   import cats.Order
   import cats.data.Kleisli
   import cats.effect.IO
 
-  import fs2.{Scheduler, Stream}
+  import fs2.Stream
 
   import java.io.File
+  import java.net.URI
   import java.nio.file.{Files, Path, Paths}
   import java.nio.charset.StandardCharsets
   import java.util.Locale
-  import java.util.concurrent.ScheduledExecutorService
 
-  import scala.concurrent.ExecutionContext
   import scala.concurrent.duration._
 
-  type ID = Long
-  type GUID = String
-  type TagName = String
-  type UnitName = String
-  type DeploymentHash = String
-  type TempoaryAccessCode = String
-  type WorkflowRef = String
-  type BlueprintRef = (String, blueprint.Blueprint.Revision)
-  type DatacenterRef = String
-  type StatusMessage = String
-  type DependencyEdge = (routing.RoutingNode, routing.RoutingNode)
+  // ── Iron constraint definitions ───────────────────────────────────────────
+
+  /** Matches lowercase alphanumeric-and-hyphen unit names (e.g. "my-service-v2"). */
+  type UnitNamePattern = Match["[a-z][a-z0-9-]*"]
+
+  /** Short deployment hash: exactly 8 hex characters. */
+  type DeploymentHashPattern = FixedLength[8] & Match["[0-9a-f]+"]
+
+  /** Simple email pattern constraint. */
+  type EmailPattern = Match[".+@.+\\..+"]
+
+  // ── Domain type aliases ───────────────────────────────────────────────────
+  // Plain type aliases maintained for backward compatibility throughout the codebase.
+  // Iron-validated smart constructors are provided via the `Validate` object below.
+
+  type ID                  = Long
+  type GUID                = String
+  type TagName             = String
+  type UnitName            = String
+  type DeploymentHash      = String
+  type TempoaryAccessCode  = String
+  type WorkflowRef         = String
+  type BlueprintRef        = (String, blueprint.Blueprint.Revision)
+  type DatacenterRef       = String
+  type StatusMessage       = String
+  type DependencyEdge      = (routing.RoutingNode, routing.RoutingNode)
   type ExpirationPolicyRef = String
-  type EmailAddress = String
-  type UnitRef = String
-  type PlanRef = String
-  type LoadbalancerRef = String
-  type DNSName = String
+  type EmailAddress        = String
+  type UnitRef             = String
+  type PlanRef             = String
+  type LoadbalancerRef     = String
+  type DNSName             = String
   type DeploymentStatusString = String
-  type Sha256 = String
-  type RenderedBlueprint = String
+  type Sha256              = String
+  type RenderedBlueprint   = String
 
-/** Copied and adapted from Scalaz's Tag implementation.
-  * https://github.com/scalaz/scalaz/blob/v7.1.17/core/src/main/scala/scalaz/package.scala
-  */
-  private[this] type Tagged[A, T] = { type Tag = T; type Self = A; }
-  type @@[T, Tag] = Tagged[T, Tag]
+  // ── Iron-validated smart constructors ────────────────────────────────────
+  // Use these at API / input boundaries to validate values with iron refinements.
+  // The validated types carry their constraint proof in the type (e.g. String :| C).
 
-  /**
-   * Given we're mostly parsing string results to task, make a simple decoder
-   * utility function for it.
-   */
-  def fromJson[A : DecodeJson](in: String): IO[A] =
-    Parse.decodeEither[A](in)
-         .fold(s => IO.raiseError(new RuntimeException(s)), IO.pure(_))
+  object Validate {
+    /** Validate a unit name: non-empty, lowercase, alphanumeric+hyphen. */
+    def unitName(s: String): Either[String, String :| (MinLength[1] & UnitNamePattern)] =
+      s.refineEither[MinLength[1] & UnitNamePattern]
 
-  implicit def versionableOps[A: Versionable](a: A): AllOps[A] = Versionable.ops.toAllVersionableOps[A](a)
+    /** Validate a deployment hash: exactly 8 lowercase hex chars. */
+    def deploymentHash(s: String): Either[String, String :| DeploymentHashPattern] =
+      s.refineEither[DeploymentHashPattern]
 
-  implicit val versionableUnit: Versionable[UnitDef @@ Versioned] = new Versionable[UnitDef @@ Versioned] {
-    def version(u: UnitDef @@ Versioned): Version =
+    /** Validate an email address against a simple pattern. */
+    def emailAddress(s: String): Either[String, String :| EmailPattern] =
+      s.refineEither[EmailPattern]
+
+    /** Validate a non-empty string. */
+    def nonEmpty(s: String): Either[String, String :| MinLength[1]] =
+      s.refineEither[MinLength[1]]
+
+    /** Validate a namespace name string (non-empty, dot-separated lowercase). */
+    def namespaceName(s: String): Either[NelsonError, NamespaceName] =
+      NamespaceName.fromString(s)
+  }
+
+  // ── JSON helper ───────────────────────────────────────────────────────────
+
+  /** Decode a JSON string into `A` using circe. */
+  def fromJson[A: Decoder](in: String): IO[A] =
+    parser.decode[A](in).fold(e => IO.raiseError(e), IO.pure)
+
+  // ── Versionable typeclass ─────────────────────────────────────────────────
+
+  given versionableUnit: Versionable[Versioned[UnitDef]] with {
+    def version(u: Versioned[UnitDef]): Version =
       Manifest.Versioned.unwrap(u).deployable.yolo(
         s"no deployable for $u when attempting to extract version").version
   }
 
-  implicit val versionableLoadbalancer: Versionable[Loadbalancer @@ Versioned] = new Versionable[Loadbalancer @@ Versioned] {
-    def version(lb: Loadbalancer @@ Versioned): Version =
+  given versionableLoadbalancer: Versionable[Versioned[Loadbalancer]] with {
+    def version(lb: Versioned[Loadbalancer]): Version =
       Manifest.Versioned.unwrap(lb).majorVersion.yolo(
         s"no major version for $lb when attempting to extract version").minVersion
   }
 
-  implicit class BedazzledOpt[A](in: Option[A]){
+  // ── Option helpers ────────────────────────────────────────────────────────
 
-    private def fail[B](err: NelsonError): IO[B] =
-      IO.raiseError(err)
-
+  extension [A](in: Option[A]) {
     def nfold[B](e: NelsonError)(f: A => B): NelsonK[B] =
       Kleisli.liftF(tfold(e)(f))
 
     def tfold[B](e: NelsonError)(f: A => B): IO[B] =
-      in.fold(fail[B](e))(a => IO(f(a)))
+      in.fold(IO.raiseError[B](e))(a => IO(f(a)))
+
+    def yolo(err: => String): A =
+      in.getOrElse(throw new NoSuchElementException(err))
   }
 
-  implicit class BedazzledIO[A](in: IO[A]){
-    def retryExponentially(seed: FiniteDuration = 15.seconds, limit: Int = 5)(scheduler: ScheduledExecutorService, ec: ExecutionContext): IO[A] = {
-      implicit val eci: ExecutionContext = ec
-      val retryStream = Scheduler.fromScheduledExecutorService(scheduler).retry(
-        in,
-        seed,
-        _ + seed,
-        limit
-      )
-      retryStream.attempt.compile.last.flatMap {
-        case None => IO.raiseError[A](new RuntimeException("Failed to retry IO action!")) // this should never happen ??
-        case Some(Left(e)) =>  IO.raiseError(e)
-        case Some(Right(a)) => IO.pure(a)
-      }
+  // ── IO retry helper ───────────────────────────────────────────────────────
+
+  extension [A](io: IO[A]) {
+    /** Retry with exponential backoff using IO.sleep. */
+    def retryExponentially(seed: FiniteDuration = 15.seconds, limit: Int = 5): IO[A] = {
+      def loop(remaining: Int, delay: FiniteDuration): IO[A] =
+        io.attempt.flatMap {
+          case Right(a) => IO.pure(a)
+          case Left(e)  =>
+            if (remaining <= 0) IO.raiseError(e)
+            else IO.sleep(delay) *> loop(remaining - 1, delay + seed)
+        }
+      loop(limit, seed)
     }
   }
 
-  implicit class BedazzledString(s: String) {
-    /**
-     * Convert a string to snake case
-     */
+  // ── String helpers ────────────────────────────────────────────────────────
+
+  extension (s: String) {
     def toSnakeCase: String =
       s.replaceAll("""(\p{Lower})(\p{Upper})""", "$1_$2")
         .replaceAll("""(\p{Upper}+)(\p{Upper}\p{Lower})""", "$1_$2")
@@ -126,56 +142,51 @@ package object nelson {
         .toLowerCase(Locale.ROOT)
 
     def withTrailingSlash: String =
-      if (s.trim.endsWith("/")) s
-      else s"${s}/"
+      if (s.trim.endsWith("/")) s else s"${s}/"
   }
 
-  import java.net.URI
+  // ── URI link builder ──────────────────────────────────────────────────────
 
-  /**
-   * Whenever one needs to refernce another location on the Nelson service,
-   * and we expect it to be referenced by an external caller (e.g. Github or browser)
-   * then we need to use the `linkTo` function which will generate a valid
-   * URL with all the external configuration settings needed for the link to
-   * work properly (i.e. accounting for HTTP(S) and such)
-   */
   def linkTo(resource: String)(network: NetworkConfig): URI = {
-    val path = if(resource.startsWith("/")) resource
-               else s"/$resource"
-
-    val pro  = if(network.tls) "https" else "http"
-    // specifically support http and https; these are implicit
-    // based on the protocol default ports
-    val por  = if(network.externalPort == 80 || network.externalPort == 443) ""
+    val path = if (resource.startsWith("/")) resource else s"/$resource"
+    val pro  = if (network.tls) "https" else "http"
+    val por  = if (network.externalPort == 80 || network.externalPort == 443) ""
                else s":${network.externalPort}"
-
     new URI(s"${pro}://${network.externalHost}${por}${path}")
   }
+
+  // ── Random helpers ────────────────────────────────────────────────────────
 
   private[this] val rng = new java.security.SecureRandom
 
   def randomAlphaNumeric(desiredLength: Int): String =
     rng.synchronized(new java.math.BigInteger(desiredLength * 5, rng).toString(32))
 
-  private[nelson] final implicit class OptionOps[A](val oa: Option[A]) extends AnyVal {
-    def yolo(err: => String): A = oa.getOrElse(throw new NoSuchElementException(err))
-  }
+  // ── Instant ordering ──────────────────────────────────────────────────────
 
-  private[nelson] implicit val orderInstant: Order[java.time.Instant] =
+  private[nelson] given orderInstant: Order[java.time.Instant] =
     Order.from(_ compareTo _)
 
-  def featureVersionFrom1or2DotString(versionString: String): Option[FeatureVersion] = {
-    Version
-      .fromString(versionString)
+  // ── Version helpers ───────────────────────────────────────────────────────
+
+  def featureVersionFrom1or2DotString(versionString: String): Option[FeatureVersion] =
+    Version.fromString(versionString)
       .map(_.toFeatureVersion)
       .orElse(FeatureVersion.fromString(versionString))
-  }
+
+  // ── Temp file helpers ─────────────────────────────────────────────────────
 
   private val DefaultTempDir =
     Paths.get(Option(System.getProperty("java.io.tmpdir")).getOrElse("/tmp"))
 
-  def withTempFile[A](s: String, prefix: String = "nelson-", suffix: String = ".tmp", dir: Path = DefaultTempDir)(f: File => Stream[IO, A]): Stream[IO, A] =
-    Stream.bracket(writeTempFile(dir, s, prefix, suffix))(f, file => IO { file.delete(); () })
+  def withTempFile[A](
+    s: String,
+    prefix: String = "nelson-",
+    suffix: String = ".tmp",
+    dir: Path = DefaultTempDir
+  )(f: File => Stream[IO, A]): Stream[IO, A] =
+    Stream.bracket(writeTempFile(dir, s, prefix, suffix))(file => IO { file.delete(); () })
+      .flatMap(f)
 
   private def writeTempFile(dir: Path, s: String, prefix: String, suffix: String): IO[File] =
     IO {

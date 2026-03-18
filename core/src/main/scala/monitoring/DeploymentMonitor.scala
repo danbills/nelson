@@ -17,29 +17,26 @@
 package nelson
 package monitoring
 
-import nelson.Datacenter.{Deployment, TrafficShift,StackName}
+import nelson.Datacenter.{Deployment, TrafficShift, StackName}
 import nelson.DeploymentStatus.{Ready, Warming}
 import nelson.Json.DeploymentEncoder
 import nelson.Nelson._
-import nelson.audit.AuditableInstances.deploymentAuditable
+import nelson.audit.AuditableInstances.given_Auditable_Deployment
 import nelson.storage.{StoreOp, StoreOpF}
 import nelson.health.{HealthCheckOp, Passing}
 
 import cats.data.{NonEmptyList, OptionT}
-import cats.effect.{Effect, IO}
+import cats.effect.IO
 import cats.implicits._
 import nelson.CatsHelpers._
 
-import fs2.{Scheduler, Sink, Stream}
-
-import helm.HealthStatus._
+import fs2.{Pipe, Stream}
 
 import java.time.Instant
 
 import journal.Logger
 
 import scala.concurrent.duration._
-import scala.language.postfixOps
 
 /*
  * Intended to be launched as a background daemon for monitoring and acting on deployment status/activity.
@@ -55,28 +52,34 @@ object DeploymentMonitor {
   final case class PromoteToReady(dc: Datacenter, deployment: Deployment) extends MonitorActionItem
   final case class RetainAsWarming(dc: Datacenter, deployment: Deployment, reason: String) extends MonitorActionItem
 
-  def heartbeat(cfg: NelsonConfig): Stream[IO, Duration] =
-    (Stream.eval(IO.pure(1 seconds)) ++ Stream.repeatEval(IO(cfg.deploymentMonitor.delay))).flatMap(d =>
-      Scheduler.fromScheduledExecutorService(cfg.pools.schedulingPool)
-        .awakeEvery(d)(Effect[IO], cfg.pools.schedulingExecutor).head)
+  def heartbeat(cfg: NelsonConfig): Stream[IO, Unit] =
+    Stream.fixedDelay[IO](cfg.deploymentMonitor.delay)
+
   /*
    * Creates a daemon that will decide all deployment monitor actions that need to occur, and drain them.
    */
-  def loop(cfg: NelsonConfig): Stream[IO, Unit] = drain(cfg)(heartbeat(cfg),
-    lift[Stream, Seq[MonitorActionItem]](monitorActionItems _ andThen Stream.eval), counterSink,
-    lift[Sink, MonitorActionItem](promotionSink)
+  def loop(cfg: NelsonConfig): Stream[IO, Unit] = drain(cfg)(
+    heartbeat(cfg),
+    lift[Stream, Seq[MonitorActionItem]](monitorActionItems _ andThen Stream.eval),
+    counterSink,
+    lift[Pipe, MonitorActionItem](promotionSink)
   )
 
   /*
    * Drain all actions from the writer (using an auditor error sink, observing it and routing to a final sink.
    */
-  def drain[A](cfg: NelsonConfig)(h: Stream[IO, Duration], w: NelsonFK[Stream, Seq[A]], s: Sink[IO, A], k: NelsonFK[Sink, A]): Stream[IO, Unit] =
-    h *> w.run(cfg).flatMap(as => Stream.emits(as).covary[IO])
-      .observe(s)(Effect[IO], cfg.pools.defaultExecutor)
+  def drain[A](cfg: NelsonConfig)(
+    h: Stream[IO, Unit],
+    w: NelsonFK[Stream, Seq[A]],
+    s: Pipe[IO, A, Nothing],
+    k: NelsonFK[Pipe, A]
+  ): Stream[IO, Unit] =
+    (h >> w.run(cfg).flatMap(as => Stream.emits(as)))
+      .observe(s)
       .attempt
-      .observeW(cfg.auditor.errorSink)(Effect[IO], cfg.pools.defaultExecutor)
+      .observeW(cfg.auditor.errorSink)
       .stripW
-      .to(k.run(cfg))
+      .through(k.run(cfg))
 
   /*
    * Build a list of MonitorActionItems based on the health of deployments that are presently in the Warming state.
@@ -87,28 +90,24 @@ object DeploymentMonitor {
   def monitorActionItemsByDatacenter(dc: Datacenter): IO[List[MonitorActionItem]] =
     for {
       ns <- StoreOp.listNamespacesForDatacenter(dc.name).foldMap(dc.storage).map(_.toList)
-      d  <- ns.flatTraverse(n => monitorActionItemsByNamespace(dc,n))
+      d  <- ns.flatTraverse(n => monitorActionItemsByNamespace(dc, n))
     } yield d
 
   def monitorActionItemsByNamespace(dc: Datacenter, ns: Datacenter.Namespace): IO[List[MonitorActionItem]] =
     for {
       d  <- StoreOp.listDeploymentsForNamespaceByStatus(ns.id, NonEmptyList.of(Warming)).foldMap(dc.storage)
-             .map(_.toList.map(_._1))
+               .map(_.toList.map(_._1))
       ai <- d.traverse(d => monitorActionItem(dc, d))
     } yield ai
 
-
   /*
-   * Validates deployment is reporting healthy in consul and no preceeding traffic shift are in progress;
-   * this guards us from having multiple traffic shifts overlapping.
-   *
-   * Ask Helm that will for the list of all the health statuses, and determine if a majority of the jobs are passing.
+   * Validates deployment is reporting healthy in consul and no preceding traffic shifts are in progress.
    */
   def monitorActionItem(dc: Datacenter, d: Deployment): IO[MonitorActionItem] =
     for {
-      hcs    <- getHealth(dc, d.namespace.name, d.stackName).foldMap(dc.health)
-      shift  <- trafficShift(d).foldMap(dc.storage)
-      next   <- next(d).foldMap(dc.storage)
+      hcs   <- getHealth(dc, d.namespace.name, d.stackName).foldMap(dc.health)
+      shift <- trafficShift(d).foldMap(dc.storage)
+      next  <- next(d).foldMap(dc.storage)
     } yield {
       if (!majorityPassing(hcs))
         RetainAsWarming(dc, d, "The majority of all health status checks must be passing.")
@@ -120,12 +119,9 @@ object DeploymentMonitor {
         else
           RetainAsWarming(dc, d, s"A previous deployment exists and will be promoted first.")
       }
-      // Note: if the traffic shift is None the deployment will be promoted to ready.
-      // This is intended for deployments that are not part of a traffic shift,
-      // i.e. periodic jobs or bootstrapping a service
     }
 
-  def majorityPassing(statuses: List[health.HealthStatus]) : Boolean = {
+  def majorityPassing(statuses: List[health.HealthStatus]): Boolean = {
     val healths = statuses.map(_.status)
     healths.count(_ == Passing) > healths.count(_ != Passing)
   }
@@ -136,14 +132,11 @@ object DeploymentMonitor {
   def trafficShift(d: Deployment): StoreOpF[Option[TrafficShift]] =
     StoreOp.getTrafficShiftForServiceName(d.nsid, d.unit.serviceName)
 
-  // returns the next deployment in warming state that should be promoted to ready
-  // this allows us to sequence traffic shifts in the order they were deployed
-  // getDeploymentForServiceNameByStatus returns an ordered list of deployments
   def next(d: Deployment): StoreOpF[Option[Deployment]] =
     StoreOp.getDeploymentsForServiceNameByStatus(d.unit.serviceName, d.nsid, NonEmptyList.of(Warming)).map(_.reverse.headOption)
 
-  val counterSink: Sink[IO, MonitorActionItem] =
-    Sink { item => count(item) }
+  val counterSink: Pipe[IO, MonitorActionItem, Nothing] =
+    _.evalMap(count).drain
 
   def count(item: MonitorActionItem): IO[Unit] = {
     val task: IO[Unit] = item match {
@@ -161,8 +154,8 @@ object DeploymentMonitor {
     }
   }
 
-  def promotionSink(cfg: NelsonConfig): Sink[IO, MonitorActionItem] =
-    Sink(item => promote(item)(cfg.auditor))
+  def promotionSink(cfg: NelsonConfig): Pipe[IO, MonitorActionItem, Nothing] =
+    _.evalMap(item => promote(item)(cfg.auditor)).drain
 
   def promote(item: MonitorActionItem)(auditor: audit.Auditor): IO[Unit] = {
     val task = item match {
