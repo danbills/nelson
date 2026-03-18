@@ -17,6 +17,7 @@
 package nelson
 
 import nelson.storage.Migrate
+import cats.effect.unsafe.implicits.global
 
 object TestStorage {
   def dbConfig(testname: String): DatabaseConfig =

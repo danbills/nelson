@@ -74,7 +74,7 @@ abstract class Default extends Product with Serializable { self =>
 
   object IsAuthenticated {
     def unapply[A](req: Request[IO]): Option[Session] = {
-      req.headers.get(headers.Cookie)
+      req.headers.get[headers.Cookie]
         .flatMap(_.values.toList.find(_.name == CookieName))
         .flatMap { cookie =>
           config.security.authenticator
@@ -135,7 +135,7 @@ object ClientValidation {
 
   def filterUserAgent(service: HttpRoutes[IO])
     (config: NelsonConfig): HttpRoutes[IO] = Kleisli { req =>
-    val maybeUserAgent = req.headers.get(headers.`User-Agent`)
+    val maybeUserAgent = req.headers.get[headers.`User-Agent`]
     if (isAllowedUserAgent(maybeUserAgent)(config.bannedClients)) service(req)
     else OptionT.liftF(BadRequest("User-Agent not allowed. Please upgrade your client to the latest version."))
   }

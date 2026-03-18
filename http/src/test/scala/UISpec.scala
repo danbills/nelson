@@ -16,6 +16,7 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
+import cats.effect.unsafe.implicits.global
 import org.scalatest._, Matchers._
 import nelson.plans.UI
 

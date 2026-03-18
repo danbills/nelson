@@ -85,6 +85,8 @@ package nelson
 
 
 trait RoutingFixtures {
+  given ioRuntime: cats.effect.unsafe.IORuntime = cats.effect.unsafe.implicits.global
+
   import nelson.Datacenter.{Port => _, _}
   import nelson.Manifest.Deployable.Container
   import nelson.Manifest.{Namespace => _, _}

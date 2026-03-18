@@ -29,7 +29,7 @@ class NomadJsonSpec extends FlatSpec with Matchers with Inspectors {
   import nelson.Manifest._
 
   val nomad = Infrastructure.Nomad(
-    org.http4s.Uri.uri("http://endpoint:8080"),
+    org.http4s.Uri.unsafeFromString("http://endpoint:8080"),
     1.second, "user", "pass", "addy",
     2300
   )

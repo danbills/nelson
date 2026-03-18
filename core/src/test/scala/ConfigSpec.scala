@@ -19,6 +19,7 @@ package nelson
 import knobs._
 import org.scalatest.{FlatSpec,Matchers}
 import cats.effect.IO
+import cats.effect.unsafe.implicits.global
 import nelson.Util._
 import loadbalancers.NlbScheme
 
@@ -69,14 +70,14 @@ class ConfigSpec extends FlatSpec with Matchers {
 
   it should "successfully read the aws config" in {
     val cfg = readAws("nelson/datacenters-valid-aws.cfg").attempt.unsafeRunSync()
-    cfg.right.exists { c =>
+    cfg.exists { c =>
       c.map(_.lbScheme) == Some(NlbScheme.Internal)
     } should equal (true)
   }
 
   it should "successfully provide a default nlb scheme in the event its missing" in {
     val cfg = readAws("nelson/datacenters-aws-missing-nlb-scheme.cfg").attempt.unsafeRunSync()
-    cfg.right.get.get.lbScheme should equal (NlbScheme.External)
+    cfg.toOption.get.get.lbScheme should equal (NlbScheme.External)
   }
 
   behavior of "readTemplate"

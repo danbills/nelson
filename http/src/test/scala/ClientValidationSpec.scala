@@ -19,7 +19,6 @@ package nelson
 import nelson.BannedClientsConfig.HttpUserAgent
 import nelson.plans.{Auth, ClientValidation}
 import cats.effect.IO
-import org.http4s.Uri.uri
 import org.http4s._
 import org.http4s.dsl.io._
 import org.http4s.headers._

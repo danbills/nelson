@@ -83,6 +83,6 @@ object policies {
 
     def release = deletePolicy(sn, ns).foldMap(interp)
 
-    Stream.bracket(acquire)(f, (_: Token) => release)
+    Stream.bracket(acquire)(_ => release).flatMap(f)
   }
 }

@@ -22,7 +22,7 @@ import org.http4s._
 /** This should be added to http4s */
 abstract class Accepts(mediaType: MediaType) {
   def unapply(req: Request[IO]): Boolean =
-    req.headers.get(headers.Accept).fold(true)(
+    req.headers.get[headers.Accept].fold(true)(
       _.values.toList.exists(_.mediaRange.satisfiedBy(mediaType)))
 }
 

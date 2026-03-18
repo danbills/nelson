@@ -37,7 +37,8 @@ import cats.~>
 import cats.data.NonEmptyList
 import cats.effect.IO
 
-import fs2.{Sink, Stream}
+import fs2.Stream
+import nelson.CatsHelpers.{Sink, given}
 
 class DeploymentMonitorSpec extends NelsonSuite {
 

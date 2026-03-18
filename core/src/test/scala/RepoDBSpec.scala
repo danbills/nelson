@@ -20,6 +20,7 @@ import nelson.storage.StoreOp
 
 import cats.data.NonEmptyList
 import cats.implicits._
+import cats.effect.unsafe.implicits.global
 
 import doobie._
 import doobie.implicits._

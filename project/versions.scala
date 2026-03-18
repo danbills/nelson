@@ -11,7 +11,7 @@ object V {
   val ciris         = "3.6.0"
   val scodec        = "2.2.2"
   val spire         = "0.18.0"
-  val prometheus    = "1.3.3"
+  val prometheus    = "0.16.0"
   val scalapb       = "0.11.17"
   val scalaTest     = "3.2.19"
   val scalaCheck    = "1.18.1"

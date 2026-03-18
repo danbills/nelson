@@ -46,7 +46,7 @@ final object NlbScheme {
 final class Aws(cfg: Infrastructure.Aws) extends (LoadbalancerOp ~> IO) {
 
   import LoadbalancerOp._
-  import scala.collection.JavaConverters._
+  import scala.jdk.CollectionConverters._
 
 
   val log = Logger[this.type]

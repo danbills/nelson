@@ -33,7 +33,7 @@ import java.nio.file.Paths
 import java.util.{ArrayList => JList}
 
 import scala.beans.BeanProperty
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.concurrent.duration._
 
 object ManifestV1Parser {

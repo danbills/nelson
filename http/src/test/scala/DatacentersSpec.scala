@@ -23,7 +23,6 @@ import cats.effect.IO
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.dsl.io._
-import org.http4s.Uri.uri
 
 class DatacentersSpec extends ServiceSpec {
   import nelson.Json.{*, given}

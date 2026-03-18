@@ -182,12 +182,12 @@ class ManifestYamlSpec extends FlatSpec with Matchers with SnakeCharmer {
 
   it should "parse datacenters 'only' filter" in {
     val target = DeploymentTarget.Only(List("arlington"))
-    loadManifest("/nelson/manifest.v1.only-dc.yml").right.get.targets should equal (target)
+    loadManifest("/nelson/manifest.v1.only-dc.yml").toOption.get.targets should equal (target)
   }
 
   it should "parse datacenters 'except' filter" in {
     val target = DeploymentTarget.Except(List("arlington"))
-    loadManifest("/nelson/manifest.v1.except-dc.yml").right.get.targets should equal (target)
+    loadManifest("/nelson/manifest.v1.except-dc.yml").toOption.get.targets should equal (target)
   }
 
   it should "allow specifying a limit without a request" in {
@@ -300,7 +300,7 @@ class ManifestYamlSpec extends FlatSpec with Matchers with SnakeCharmer {
   }
 
   it should "parse a manifest that makes use of YAML anchors and aliases" in {
-    val check = loadManifest("/nelson/manifest.v1.anchors.yml").right.map(
+    val check = loadManifest("/nelson/manifest.v1.anchors.yml").map(
       _.plans.flatMap(_.environment.retries))
     check should equal (Right(List(2,2)))
   }

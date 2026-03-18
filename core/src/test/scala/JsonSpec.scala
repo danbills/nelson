@@ -16,6 +16,7 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
+import cats.effect.unsafe.implicits.global
 import io.circe.parser.decode
 import org.scalatest._
 

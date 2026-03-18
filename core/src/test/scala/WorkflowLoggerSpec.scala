@@ -19,16 +19,17 @@ package nelson
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll,BeforeAndAfterEach}
 import java.nio.file.Files
 
-import cats.effect.{Effect, IO}
-import scala.concurrent.ExecutionContext
+import cats.effect.IO
+import cats.effect.std.Queue
+import cats.effect.unsafe.implicits.global
 
-import fs2.async.boundedQueue
-import fs2.{io, text}
+import fs2.io.file.{Files => Fs2Files, Path => FPath}
+import fs2.text
 
 class WorkflowLoggerSpec extends FlatSpec with Matchers with BeforeAndAfterAll with BeforeAndAfterEach {
 
   val queue =
-    boundedQueue[IO, (ID,String)](10)(Effect[IO], ExecutionContext.global).unsafeRunSync()
+    Queue.bounded[IO, (ID,String)](10).unsafeRunSync()
 
   val base = Files.createTempDirectory("nelson")
   val logger = new logging.WorkflowLogger(queue, base)
@@ -49,7 +50,7 @@ class WorkflowLoggerSpec extends FlatSpec with Matchers with BeforeAndAfterAll w
 
   private def delete() = {
     import scala.util.Try
-    import scala.collection.JavaConverters._
+    import scala.jdk.CollectionConverters._
     Try(Files.newDirectoryStream(base)).map(stream =>
       stream.asScala.toIterator.foreach(file => scala.util.Try(Files.delete(file)))
     )
@@ -68,7 +69,7 @@ class WorkflowLoggerSpec extends FlatSpec with Matchers with BeforeAndAfterAll w
     val path = base.resolve("1.log")
     logger.log(1L, "foo").unsafeRunSync()
     logger.process.take(1).compile.drain.unsafeRunSync()
-    val line = io.file.readAll[IO](path, 4096).through(text.utf8Decode).through(text.lines).compile.toVector.unsafeRunSync()
+    val line = Fs2Files[IO].readAll(FPath.fromNioPath(path)).through(text.utf8.decode).through(text.lines).compile.toVector.unsafeRunSync()
     line.filter(_.nonEmpty).map(removeTimestamp) should equal (Vector("foo"))
   }
 
@@ -77,7 +78,7 @@ class WorkflowLoggerSpec extends FlatSpec with Matchers with BeforeAndAfterAll w
     logger.log(1L, "foo").unsafeRunSync()
     logger.log(1L, "bar").unsafeRunSync()
     logger.process.take(2).compile.drain.unsafeRunSync()
-    val lines = io.file.readAll[IO](path, 4096).through(text.utf8Decode).through(text.lines).compile.toVector.unsafeRunSync()
+    val lines = Fs2Files[IO].readAll(FPath.fromNioPath(path)).through(text.utf8.decode).through(text.lines).compile.toVector.unsafeRunSync()
     lines.filter(_.nonEmpty).map(removeTimestamp) should equal (Vector("foo","bar"))
   }
 
@@ -86,7 +87,7 @@ class WorkflowLoggerSpec extends FlatSpec with Matchers with BeforeAndAfterAll w
     logger.log(1L, "foo\n").unsafeRunSync()
     logger.log(1L, "bar").unsafeRunSync()
     logger.process.take(2).compile.drain.unsafeRunSync()
-    val lines = io.file.readAll[IO](path, 4096).through(text.utf8Decode).through(text.lines).compile.toVector.unsafeRunSync()
+    val lines = Fs2Files[IO].readAll(FPath.fromNioPath(path)).through(text.utf8.decode).through(text.lines).compile.toVector.unsafeRunSync()
     lines.filter(_.nonEmpty).map(removeTimestamp) should equal (Vector("foo","bar"))
   }
 

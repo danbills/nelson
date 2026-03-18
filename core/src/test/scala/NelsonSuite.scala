@@ -18,6 +18,7 @@ package nelson
 
 import cats.~>
 import cats.effect.IO
+import cats.effect.unsafe.IORuntime
 import cats.implicits._
 
 import nelson.notifications.{SlackOp,EmailOp}
@@ -31,8 +32,9 @@ import knobs._
 
 import scala.collection.immutable.SortedMap
 
-import org.http4s.client.blaze.{BlazeClientConfig, Http1Client}
+import org.http4s.ember.client.EmberClientBuilder
 
+import org.http4s.Uri
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 
 trait NelsonSuite
@@ -40,6 +42,11 @@ trait NelsonSuite
     with Matchers
     with RoutingFixtures
     with BeforeAndAfterAll {
+
+  given ioRuntime: IORuntime = cats.effect.unsafe.implicits.global
+
+  /** Backward-compatible helper replacing http4s 0.18.x's Uri.uri function. */
+  protected def uri(s: String): Uri = Uri.unsafeFromString(s)
 
   val testName: String = getClass.getSimpleName
 
@@ -76,14 +83,13 @@ trait NelsonSuite
 
   lazy val testConsul: ConsulOp ~> IO = new (ConsulOp ~> IO) {
     @volatile var kvs: Map[String,String] = consulMap
-    import helm.Key
     def apply[A](a: ConsulOp[A]): IO[A] = a match {
-      case ConsulOp.KVGet(key: Key) => IO(Some(kvs(key)))
-      case ConsulOp.KVSet(key: Key, value: String) => IO(kvs = kvs + (key -> value))
-      case ConsulOp.KVDelete(key: Key) => IO(kvs = kvs - key)
-      case ConsulOp.KVListKeys(prefix: Key) => IO(kvs.keySet.filter(_.startsWith(prefix)))
+      case ConsulOp.KVGet(key: helm.Key) => IO(Some(kvs(key)))
+      case ConsulOp.KVSet(key: helm.Key, value: String) => IO(kvs = kvs + (key -> value))
+      case ConsulOp.KVDelete(key: helm.Key) => IO(kvs = kvs - key)
+      case ConsulOp.KVListKeys(prefix: helm.Key) => IO(kvs.keySet.filter(_.startsWith(prefix)))
       case ConsulOp.HealthListChecksForService(service: String, _, _, _) =>
-        IO(List(HealthCheckResponse("", "", "", helm.HealthStatus.fromString(kvs(s"health/$service")).get, "", "", "", "", List.empty, 0L, 0L)))
+        IO(List(HealthCheckResponse("", "", "", helm.HealthStatus.fromString(kvs(s"health/$service")).get, "", "", "", "")))
       case _ => throw new Exception("currently not used")
     }
   }
@@ -197,5 +203,7 @@ trait NelsonSuite
 }
 
 object NelsonSuite {
-  val testHttp = (_: BlazeClientConfig) => Http1Client[IO]()
+  /** An ember-based HTTP client for tests. */
+  val testHttp: IO[org.http4s.client.Client[IO]] =
+    EmberClientBuilder.default[IO].build.use(IO.pure)
 }

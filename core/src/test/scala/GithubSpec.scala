@@ -16,6 +16,7 @@
 //: ----------------------------------------------------------------------------
 package nelson
 
+import cats.effect.unsafe.implicits.global
 import org.scalatest._
 import Github.Interpreter.Step
 import org.scalacheck._

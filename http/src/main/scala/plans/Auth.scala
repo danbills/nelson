@@ -47,7 +47,7 @@ final case class Auth(config: NelsonConfig) extends Default {
       }
 
     case GET -> Root / "auth" / "logout" =>
-      Found(Location(uri("/"))).map(_.putHeaders(Cookie(CookieName, "").clearCookie))
+      Found(Location(uri("/"))).map(_.putHeaders(`Set-Cookie`(ResponseCookie(CookieName, "").clearCookie)))
 
     /*
      * used to exchange github token for a nelson token. This endpoint
@@ -75,11 +75,11 @@ final case class Auth(config: NelsonConfig) extends Default {
       } yield b).fold(
         e => IO.raiseError(new RuntimeException(e.toString)),
         s => {
-          val cookie = Cookie(CookieName, s,
-            path   = Some("/"),
-            domain = Some(cfg.network.externalHost),
-            secure = cfg.network.tls,
-            maxAge = Some(cfg.security.expireLoginAfter.toSeconds.toLong),
+          val cookie = ResponseCookie(CookieName, s,
+            path     = Some("/"),
+            domain   = Some(cfg.network.externalHost),
+            secure   = cfg.network.tls,
+            maxAge   = Some(cfg.security.expireLoginAfter.toSeconds.toLong),
             httpOnly = false // determines if js can read this cookie
           )
           Found(Location(uri("/"))).map(_.putHeaders(`Set-Cookie`(cookie)))

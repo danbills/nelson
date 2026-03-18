@@ -20,7 +20,7 @@ import nelson.plans.Auth
 import io.circe.{Json => CJson}
 import io.circe.syntax._
 import cats.effect.IO
-import org.http4s._, headers._, dsl.io._, Uri.uri
+import org.http4s._, headers._, dsl.io._
 import org.http4s.circe._
 
 class AuthSpec extends NelsonSuite {
@@ -33,7 +33,7 @@ class AuthSpec extends NelsonSuite {
     val config0 = config.copy(security = config.security.copy(useEnvironmentSession = true))
     val resp = Auth(config0).service.orNotFound(req).unsafeRunSync()
     resp.status should equal (Found)
-    resp.headers.get(Location).map(_.uri) should equal (Some(uri("/auth/exchange?code=yolo")))
+    resp.headers.get[Location].map(_.uri) should equal (Some(uri("/auth/exchange?code=yolo")))
   }
 
   it should "use redirect to git login endpoint if environment sessions are disabled" in {
@@ -41,14 +41,14 @@ class AuthSpec extends NelsonSuite {
     val config0 = config.copy(security = config.security.copy(useEnvironmentSession = false))
     val resp = Auth(config0).service.orNotFound(req).unsafeRunSync()
     resp.status should equal (Found)
-    resp.headers.get(Location).fold("")(_.uri.toString) should include ("//github.com")
+    resp.headers.get[Location].fold("")(_.uri.toString) should include ("//github.com")
   }
 
   "logout" should "redirect to the home page" in {
     val req = Request[IO](GET, uri("/auth/logout"))
     val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (Found)
-    resp.headers.get(Location).map(_.uri) should equal (Some(uri("/")))
+    resp.headers.get[Location].map(_.uri) should equal (Some(uri("/")))
   }
 
   it should "Clear the cookie" in {
@@ -113,7 +113,7 @@ class AuthSpec extends NelsonSuite {
     val req = Request[IO](GET, uri("/auth/exchange?code=goodcode"))
     val resp = service.orNotFound(req).unsafeRunSync()
     resp.status should equal (Found)
-    resp.headers.get(Location).map(_.uri) should equal (Some(uri("/")))
+    resp.headers.get[Location].map(_.uri) should equal (Some(uri("/")))
   }
 
   it should "Fail with a 401 for a bad code" is (pending)

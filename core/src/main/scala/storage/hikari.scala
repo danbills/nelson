@@ -2,16 +2,19 @@ package nelson
 package storage
 
 import doobie.hikari._
-import cats.effect.IO
+import cats.effect.{IO, Resource}
+import cats.effect.unsafe.implicits.global
 
 object Hikari {
 
   def build(db: DatabaseConfig): HikariTransactor[IO] = {
-    val trans = for {
-      xa <- HikariTransactor.newHikariTransactor[IO](db.driver, db.connection, db.username.getOrElse(""), db.password.getOrElse(""))
-       _ <- xa.configure(hx => IO(db.maxConnections.foreach(max => hx.setMaximumPoolSize(max))))
-    } yield xa
+    val trans: Resource[IO, HikariTransactor[IO]] =
+      HikariTransactor.newHikariTransactor[IO](
+        db.driver, db.connection,
+        db.username.getOrElse(""), db.password.getOrElse("")
+      ).evalTap(xa => xa.configure(hx => IO(db.maxConnections.foreach(max => hx.setMaximumPoolSize(max)))))
 
-    trans.unsafeRunSync()
+    // Allocate the transactor without releasing it: it lives for the app lifetime.
+    trans.allocated.unsafeRunSync()._1
   }
 }

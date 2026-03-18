@@ -17,6 +17,11 @@ import scala.collection.immutable.LazyList
 /** Compatibility type alias — fs2 3.x removed `Sink`; use `Pipe[F, A, Nothing]` instead. */
 type Sink[F[_], -A] = Pipe[F, A, Nothing]
 
+/** Convenience factory matching the old fs2 0.10 `Sink` companion object. */
+object Sink {
+  def apply[F[_], A](f: A => F[Unit]): Sink[F, A] = _.evalMap(f)
+}
+
 object CatsHelpers {
   extension [A](io: IO[A]) {
     /** Run `other` if this IO fails */

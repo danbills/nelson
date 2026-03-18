@@ -66,12 +66,12 @@ final case class GithubConfig(
   def isEnterprise: Boolean = domain.nonEmpty
 
   val oauth = domain match {
-    case None => Uri.uri("https://github.com")
+    case None => Uri.unsafeFromString("https://github.com")
     case Some(uri) => Uri.unsafeFromString(s"https://${uri.toString}")
   }
 
   val api = domain match {
-    case None => Uri.uri("https://api.github.com")
+    case None => Uri.unsafeFromString("https://api.github.com")
     case Some(uri) => Uri.unsafeFromString(s"https://${(uri / "api" / "v3").toString}")
   }
 

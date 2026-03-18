@@ -20,7 +20,8 @@ import org.http4s._
 import org.http4s.circe._
 import org.http4s.dsl.io._
 import org.http4s.server.staticcontent.{FileService, fileService, ResourceService, resourceService}
-import org.http4s.server.blaze.BlazeServerBuilder
+import org.http4s.ember.server.EmberServerBuilder
+import com.comcast.ip4s.{Host, Port}
 import io.circe.syntax._
 
 import cats.data.{Kleisli, OptionT}
@@ -104,11 +105,16 @@ object Server {
   }
 
   def start(config: NelsonConfig): IO[org.http4s.server.Server] = {
-    BlazeServerBuilder[IO]
+    val host = Host.fromString(config.network.bindHost)
+      .getOrElse(Host.fromString("0.0.0.0").get)
+    val port = Port.fromInt(config.network.bindPort)
+      .getOrElse(Port.fromInt(9000).get)
+    EmberServerBuilder.default[IO]
+      .withHost(host)
+      .withPort(port)
       .withIdleTimeout(config.network.idleTimeout)
-      .bindHttp(config.network.bindPort, config.network.bindHost)
       .withHttpApp(service(config).orNotFound)
-      .resource
+      .build
       .use(_ => IO.never)
   }
 }

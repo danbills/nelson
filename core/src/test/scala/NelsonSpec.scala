@@ -216,7 +216,7 @@ class NelsonSpec extends NelsonSuite with BeforeAndAfterEach {
   }
 
   it should "list datacenters" in {
-    val dcs = Nelson.listDatacenters(config.pools.defaultExecutor).run(config).unsafeRunSync()
+    val dcs = Nelson.listDatacenters.run(config).unsafeRunSync()
     dcs.keys.map(_.name).toSet should equal (Set(testName))
   }
 

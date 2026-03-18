@@ -19,6 +19,7 @@ package crypto
 package protocol
 
 import cats.effect.IO
+import cats.effect.unsafe.implicits.global
 
 import scodec._
 import scodec.bits.{BitVector, ByteVector}

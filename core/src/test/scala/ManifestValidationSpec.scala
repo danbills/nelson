@@ -28,7 +28,7 @@ import journal.Logger
 import org.scalatest.concurrent.TimeLimitedTests
 import org.scalatest.time.SpanSugar._
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 class ManifestValidationSpec extends NelsonSuite with TimeLimitedTests {
   // This spec has been hanging in Travis, and now it's not, but we

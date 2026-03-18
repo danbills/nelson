@@ -29,6 +29,7 @@ package object alerts {
   import nelson.Manifest.AlertOptOut
 
   import cats.effect.IO
+  import cats.effect.unsafe.implicits.global
   import cats.free.Free
 
   import helm.ConsulOp

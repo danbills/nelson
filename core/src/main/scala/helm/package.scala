@@ -8,15 +8,28 @@ package object helm {
   import cats.effect.IO
   import cats.free.Free
 
+  /** Type alias matching the original helm library's Key type. */
+  type Key = String
+
   sealed trait HealthStatus
   object HealthStatus {
     case object Passing  extends HealthStatus
     case object Warning  extends HealthStatus
     case object Critical extends HealthStatus
     case object Unknown  extends HealthStatus
+
+    def fromString(s: String): Option[HealthStatus] = s.toLowerCase match {
+      case "passing"  => Some(Passing)
+      case "warning"  => Some(Warning)
+      case "critical" => Some(Critical)
+      case "unknown"  => Some(Unknown)
+      case _          => None
+    }
   }
 
-  /** Response from a Consul health check. */
+  /** Response from a Consul health check.
+   *  11 fields matching the original helm library.
+   */
   final case class HealthCheckResponse(
     node: String,
     checkId: String,
@@ -25,7 +38,10 @@ package object helm {
     notes: String,
     output: String,
     serviceId: String,
-    serviceName: String
+    serviceName: String,
+    tags: List[String] = Nil,
+    createIndex: Long = 0L,
+    modifyIndex: Long = 0L
   )
 
   /** Response from listing services registered with an agent. */
@@ -47,7 +63,7 @@ package object helm {
       baseUri: org.http4s.Uri,
       client: org.http4s.client.Client[IO],
       token: Option[String],
-      creds: Option[(String, String)]
+      creds: Option[(String, String)] = None
     ) extends (ConsulOp ~> IO) {
       def apply[A](op: ConsulOp[A]): IO[A] =
         IO.raiseError(new NotImplementedError("Http4sConsulClient stub: not implemented"))

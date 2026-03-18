@@ -25,36 +25,26 @@ import cats.effect.IO
 import fs2.Stream
 
 import java.io.File
-import java.util.concurrent.{Executors, ThreadFactory}
 
 import journal.Logger
 
 import knobs._
 
-import org.http4s.client.blaze.Http1Client
-
-import scala.concurrent.ExecutionContext
+import cats.effect.unsafe.implicits.global
+import org.http4s.ember.client.EmberClientBuilder
 
 object Main {
   private val log = Logger[this.type]
 
   def main(args: Array[String]): Unit = {
-    val configThreadFactory = new ThreadFactory {
-      def newThread(r: Runnable) = {
-        val t = Executors.defaultThreadFactory.newThread(r)
-        t.setName("nelson-knobs")
-        t
-      }
-    }
-
-    val configThreadPool = ExecutionContext.fromExecutorService(Executors.newSingleThreadExecutor(configThreadFactory))
-
     val file = new File(args.headOption.getOrElse("/opt/application/conf/nelson.cfg"))
+
+    val httpClient = EmberClientBuilder.default[IO].build.use(IO.pure)
 
     def readConfig = for {
       defaults  <- knobs.loadImmutable[IO](Required(ClassPathResource("nelson/defaults.cfg")) :: Nil)
-      overrides <- knobs.loadImmutable[IO](Optional(FileResource(file)(configThreadPool)) :: Nil)
-      config    <- Config.readConfig(defaults ++ overrides, cfg => Http1Client[IO](cfg), Hikari.build _)
+      overrides <- knobs.loadImmutable[IO](Optional(FileResource(file)) :: Nil)
+      config    <- Config.readConfig(defaults ++ overrides, httpClient, Hikari.build _)
     } yield config
 
     val cfg = readConfig.unsafeRunSync()
@@ -84,11 +74,11 @@ object Main {
       import cleanup.SweeperDefaults._
 
       log.info("booting the background processes nelson needs to operate...")
-      runBackgroundJob("auditor", cfg.auditor.process(cfg.storage)(cfg.pools.defaultExecutor))
+      runBackgroundJob("auditor", cfg.auditor.process(cfg.storage))
       runBackgroundJob("pipeline_processor", Stream.eval(Pipeline.task(cfg)(Pipeline.sinks.runAction(cfg))))
       runBackgroundJob("workflow_logger", cfg.workflowLogger.process)
-      runBackgroundJob("routing_cron", routing.cron.consulRefresh(cfg) to Http4sConsul.consulSink)
-      runBackgroundJob("cleanup_pipeline", cleanup.CleanupCron.pipeline(cfg)(cfg.pools.defaultExecutor))
+      runBackgroundJob("routing_cron", routing.cron.consulRefresh(cfg).through(Http4sConsul.consulSink))
+      runBackgroundJob("cleanup_pipeline", cleanup.CleanupCron.pipeline(cfg))
       runBackgroundJob("sweeper", cleanup.Sweeper.process(cfg))
       runBackgroundJob("deployment_monitor", DeploymentMonitor.loop(cfg))
 

@@ -25,8 +25,9 @@ libraryDependencies ++= Seq(
   "org.flywaydb"        % "flyway-core"                             % "10.15.0",
   "org.yaml"            % "snakeyaml"                               % "2.2",
   "org.scalatra.scalate" %% "scalate-core"                          % "1.10.1",
-  "io.prometheus"       % "prometheus-metrics-core"                 % V.prometheus,
-  "io.prometheus"       % "prometheus-metrics-instrumentation-jvm"  % V.prometheus,
+  "io.prometheus"       % "simpleclient"                            % V.prometheus,
+  "io.prometheus"       % "simpleclient_common"                     % V.prometheus,
+  "io.prometheus"       % "simpleclient_hotspot"                    % V.prometheus,
   "com.cronutils"       % "cron-utils"                              % "9.2.1",
   "org.apache.commons"  % "commons-email"                           % "1.6.0",
   "commons-codec"       % "commons-codec"                           % "1.17.1",
@@ -37,6 +38,8 @@ libraryDependencies ++= Seq(
   "org.typelevel"      %% "cats-laws"                               % V.cats       % Test,
   "org.scalatest"      %% "scalatest"                               % V.scalaTest  % Test,
   "org.scalacheck"     %% "scalacheck"                              % V.scalaCheck % Test,
+  // TypeSafe Config (HOCON) used by the knobs compatibility stub to parse .cfg files
+  "com.typesafe"        % "config"                                  % "1.4.3",
 )
 
 buildInfoPackage := "nelson"

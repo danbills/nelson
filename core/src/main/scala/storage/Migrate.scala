@@ -11,25 +11,25 @@ object Migrate {
 
   def migrate(cfg: DatabaseConfig): IO[Unit] =
     IO {
-      val flyway = new Flyway
-      flyway.setDataSource(
-        cfg.connection,
-        cfg.username.getOrElse(""),
-        cfg.password.getOrElse(""))
+      val flyway = Flyway.configure()
+        .dataSource(
+          cfg.connection,
+          cfg.username.getOrElse(""),
+          cfg.password.getOrElse(""))
+        .load()
 
       try {
         log.info("Conducting database schema migrations if needed.")
-        val completed = flyway.migrate()
-        log.info(s"Completed $completed succsessful migrations.")
+        val result = flyway.migrate()
+        log.info(s"Completed ${result.migrationsExecuted} succsessful migrations.")
       } catch {
-        case e: Throwable => {
+        case e: Throwable =>
           // attempt a repair (useful for local debugging)
           log.error(s"Failed to migrate database. ${e.getMessage}")
           log.info("Repairing database before retrying migration")
           flyway.repair()
-          val completed = flyway.migrate()
-          log.info(s"After repair, completed $completed succsessful migrations.")
-        }
+          val result = flyway.migrate()
+          log.info(s"After repair, completed ${result.migrationsExecuted} succsessful migrations.")
       }
     }
 }

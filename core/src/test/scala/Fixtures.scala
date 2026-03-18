@@ -88,7 +88,7 @@ object Fixtures {
     } yield ZonedDateTime.parse(a.toString)
 
   def genZoneId: Gen[ZoneId] = {
-    import scala.collection.JavaConverters._
+    import scala.jdk.CollectionConverters._
     for {
       a <- Gen.oneOf(ZoneId.SHORT_IDS.asScala.values.toList)
     } yield ZoneId.of(a)

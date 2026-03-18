@@ -40,7 +40,7 @@ libraryDependencies ++= Seq(
   "org.http4s"   %% "http4s-circe"         % V.http4s,
   "org.http4s"   %% "http4s-dsl"           % V.http4s,
   "org.http4s"   %% "http4s-ember-server"  % V.http4s,
-  "io.prometheus" % "prometheus-metrics-exposition-httpserver" % V.prometheus,
+  "io.prometheus" % "simpleclient_common"                     % V.prometheus,
   "org.scalatest"  %% "scalatest"   % V.scalaTest  % Test,
   "org.scalacheck" %% "scalacheck"  % V.scalaCheck % Test,
 )

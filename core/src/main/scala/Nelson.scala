@@ -254,12 +254,12 @@ object Nelson {
       Github.Request.getDeployment(slug, referenceId)(t)
         .foldMap(cfg.github)
         .ensure(MissingDeploymentReference(referenceId, slug))(_.nonEmpty)
-        .retryExponentially(2.seconds, limit = 3)(cfg.pools.schedulingPool, cfg.pools.defaultExecutor)
+        .retryExponentially(2.seconds, limit = 3)
     }.map(_.get)
   }
 
   def deploy(actions: List[Manifest.Action]): NelsonK[Unit] =
-    Kleisli(cfg => actions.traverse_(a => cfg.queue.enqueue1(a)))
+    Kleisli(cfg => actions.traverse_(a => cfg.queue.offer(a)))
 
   /**
    * Invoked when the inbound webhook from Github arrives, notifying Nelson

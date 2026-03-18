@@ -125,7 +125,7 @@ final case class Datacenters(config: NelsonConfig) extends Default {
      * List all the datacenters and their subordinate namespaces
      */
    case GET -> Root / "v1" / "datacenters" & IsAuthenticated(_) =>
-      json(Nelson.listDatacenters(config.pools.defaultExecutor).map(_.toList))
+      json(Nelson.listDatacenters.map(_.toList))
 
     /*
      * GET /v1/datacenters/portland

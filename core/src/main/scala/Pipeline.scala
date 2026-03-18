@@ -19,7 +19,7 @@ package nelson
 import cats.effect.IO
 import nelson.CatsHelpers._
 import cats.syntax.applicativeError._
-import fs2.{Sink, Stream}
+import fs2.Stream
 
 import journal.Logger
 
@@ -52,14 +52,12 @@ object Pipeline {
    */
   def task(config: NelsonConfig)(effects: Sink[IO, Action]): IO[Unit] = {
     def par[A](ps: Stream[IO, Stream[IO, A]]): Stream[IO, A] = {
-      implicit val ec = config.pools.defaultExecutor
-
-      val withErrors = ps.join(config.pipeline.concurrencyLimit).attempt
-
+      val withErrors = ps.parJoin(config.pipeline.concurrencyLimit).attempt
       withErrors.observeW(config.auditor.errorSink).stripW
     }
 
-    val p: Stream[IO, Stream[IO, Unit]] = config.queue.dequeue.map(a => Stream.emit(a).covary[IO].to(effects))
+    val p: Stream[IO, Stream[IO, Unit]] =
+      Stream.fromQueueUnterminated(config.queue).map(a => Stream.emit(a).through(effects))
 
     par(p).compile.drain
   }

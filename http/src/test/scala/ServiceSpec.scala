@@ -34,16 +34,16 @@ trait ServiceSpec extends NelsonSuite {
 
   lazy val serialized = config.security.authenticator.serialize(session).fold(e => sys.error(e.toString), identity)
 
-  lazy val cookie = org.http4s.Cookie("nelson.session", serialized,
-    path   = Some("/"),
-    domain = Some(config.network.externalHost),
-    secure = config.network.tls,
-    maxAge = Some(config.security.expireLoginAfter.toSeconds.toLong),
+  lazy val cookie = org.http4s.ResponseCookie("nelson.session", serialized,
+    path     = Some("/"),
+    domain   = Some(config.network.externalHost),
+    secure   = config.network.tls,
+    maxAge   = Some(config.security.expireLoginAfter.toSeconds.toLong),
     httpOnly = false
   )
 
   implicit class RequestSyntax(req: Request[IO]) {
     def authed: Request[IO] =
-      req.putHeaders(org.http4s.headers.Cookie(cookie))
+      req.addCookie(cookie.name, cookie.content)
   }
 }

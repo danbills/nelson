@@ -18,10 +18,9 @@ package nelson
 package helmhttp4s
 
 import cats.~>
-import cats.data.Kleisli
-import cats.effect.IO
+import cats.effect.{IO, Resource}
+import cats.effect.unsafe.implicits.global
 import fs2.Stream
-import fs2.interop.scodec.ByteVectorChunk
 import scodec.bits.ByteVector
 import org.http4s.{EntityBody, Request, Response, Status, Uri}
 import org.http4s.client._
@@ -30,7 +29,7 @@ import org.scalactic.TypeCheckedTripleEquals
 import helm._
 import helm.http4s.Http4sConsulClient
 
-class Http4sConsulClientSpec extends FlatSpec with Matchers with TypeCheckedTripleEquals {
+class Http4sConsulClientSpec extends flatspec.AnyFlatSpec with matchers.should.Matchers with TypeCheckedTripleEquals {
   import Http4sConsulTests._
 
   "get" should "succeed with some when the response is 200" in {
@@ -72,7 +71,7 @@ class Http4sConsulClientSpec extends FlatSpec with Matchers with TypeCheckedTrip
 object Http4sConsulTests {
   def constantConsul(response: Response[IO]): ConsulOp ~> IO = {
     new Http4sConsulClient(
-      Uri.uri("http://localhost:8500/v1/kv/v1"),
+      Uri.unsafeFromString("http://localhost:8500/v1/kv/v1"),
       constantResponseClient(response),
       None)
   }
@@ -82,13 +81,11 @@ object Http4sConsulTests {
     Response(status = status, body = responseBody)
   }
 
-  def constantResponseClient(response: Response[IO]): Client[IO] = {
-    val dispResponse = DisposableResponse(response, IO.unit)
-    Client[IO](Kleisli{(_: Request[IO]) => IO.pure(dispResponse)}, IO.unit)
-  }
+  def constantResponseClient(response: Response[IO]): Client[IO] =
+    Client[IO](_ => Resource.pure[IO, Response[IO]](response))
 
   def body(s: String): EntityBody[IO] =
-    Stream.chunk(ByteVectorChunk(ByteVector.encodeUtf8(s).right.get)) // YOLO
+    Stream.chunk(fs2.Chunk.byteVector(ByteVector.encodeUtf8(s).fold(throw _, identity)))
 
   val dummyRequest: Request[IO] = Request()
 }
